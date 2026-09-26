@@ -6,6 +6,7 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { timingSafeEqual } from "node:crypto";
 import { findScenario, prospectSystem, gradePrompt, deliveryLine } from "./public/framework.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -26,6 +27,19 @@ const FALLBACK = { betas: ["server-side-fallback-2026-07-01"], fallbacks: "defau
 
 const client = new Anthropic();
 const app = express();
+app.disable("x-powered-by");
+
+// Optional shared password (HTTP Basic auth) so a deployed copy isn't an open door to your API keys.
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
+if (APP_PASSWORD) {
+  app.use((req, res, next) => {
+    const [scheme, token] = String(req.headers.authorization || "").split(" ");
+    const pass = scheme === "Basic" && token ? Buffer.from(token, "base64").toString().split(":").slice(1).join(":") : "";
+    const a = Buffer.from(pass), b = Buffer.from(APP_PASSWORD);
+    if (a.length === b.length && timingSafeEqual(a, b)) return next();
+    res.set("WWW-Authenticate", 'Basic realm="The Dial Room"').status(401).send("Password required.");
+  });
+}
 app.use(express.json({ limit: "256kb" }));
 app.use(express.static(path.join(ROOT, "public")));
 

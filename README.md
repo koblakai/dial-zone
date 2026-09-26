@@ -10,7 +10,7 @@ cp .env.example .env        # then put your key in ANTHROPIC_API_KEY
 npm start                   # http://localhost:3000
 ```
 
-Open it in **Chrome or Edge** (they have built-in speech recognition), allow the microphone, and press **Dial**. Headphones help, so the mic doesn't pick up the prospect. Other browsers still work, but you type your lines instead of speaking them.
+Open it in **Chrome or Edge** (they have built-in speech recognition), allow the microphone, and press **Dial**. Headphones help, so the mic doesn't pick up the prospect. Other browsers still work, but you type your lines instead of speaking them. Browsers only allow the microphone on `localhost` or over HTTPS, so put a deployed copy behind HTTPS.
 
 | Variable | Needed | What it does |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 | `ELEVENLABS_API_KEY` | no | Realistic studio voices for the prospect. Without it the browser's built-in voices are used. |
 | `PROSPECT_MODEL` / `GRADER_MODEL` | no | Default `claude-opus-5`. A faster model (e.g. `claude-sonnet-5`) cuts response time. |
 | `PROSPECT_EFFORT` | no | Default `low`, to keep replies snappy. |
+| `APP_PASSWORD` | no | Require a password (any username) to open the app. Set it whenever other people can reach the server. |
 | `LOG_LATENCY` | no | Set to `1` to log time-to-first-word for each prospect reply. |
 
 ## What happens on a call

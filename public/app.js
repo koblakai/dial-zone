@@ -6,6 +6,7 @@ import * as phone from "./phone.js";
   const ECHO_TAIL_MS=350;             // ignore mic for this long after they stop talking
   const SR_LAG_MS=300;                // speech-to-text reports words roughly this late
   const PAUSE_MS=700;                 // a gap this long between words counts as a pause
+  const SPEC_MS=400;                  // start thinking this early; only speak once the turn is really over
   const DEAD_AIR_MS=6000;             // prospect reacts to this much silence from you
   const DEAD_AIR_TYPED_MS=20000;      // …more slack when you're typing
 
@@ -76,7 +77,7 @@ import * as phone from "./phone.js";
     if(S.phase==="live"){
       if(S.ringing){ cls="think"; label="Ringing…"; }
       else if(S.speaking){ cls="talk"; label=speakerName()+" is talking"; }
-      else if(S.busy){ cls="think"; label="…"; }
+      else if(S.busy&&!S.spec){ cls="think"; label="…"; }
       else if(S.mic==="live"){ cls="listen"; label="Your turn — talk"; }
       else if(S.mic==="denied"){ cls="off"; label="Mic blocked — type instead"; }
       else if(S.mic==="unsupported"){ cls="off"; label="No mic here — type instead"; }
@@ -272,17 +273,49 @@ import * as phone from "./phone.js";
     if(fin) S.heard=(S.heard+" "+fin).trim();
     S.interim=inter.trim();
     const sofar=(S.heard+" "+S.interim).trim();
+    if(S.spec&&norm(sofar)!==norm(S.spec.text)) cancelSpec();   // you kept going
     S.eotMs=TRAILING.test(sofar.replace(/[.,!?…\s]+$/,""))?TRAILING_MS:SILENCE_MS;
     updateMouth();
-    clearTimeout(S.vadTimer);
+    clearTimeout(S.vadTimer); clearTimeout(specTimer);
     S.vadTimer=setTimeout(endOfTurn,S.eotMs);
+    if(!S.spec&&S.eotMs===SILENCE_MS) specTimer=setTimeout(startSpec,SPEC_MS);
+  }
+
+  /* --- speculative reply: generate during the end-of-turn pause, release on commit --- */
+  let specTimer=null;
+  function startSpec(){
+    specTimer=null;
+    if(S.phase!=="live"||S.spec||S.busy||S.hold||S.ringing||S.speaking||!S.tm) return;
+    const text=(S.heard+" "+S.interim).trim(); if(!text) return;
+    let release; const gate=new Promise(r=>{ release=r; });
+    const turn={side:"rep",text,meta:measure(text,S.tm),pending:true};
+    S.turns.push(turn);
+    S.spec={text,turn,release};
+    askProspect(false,{gate});
+  }
+  function cancelSpec(){
+    const sp=S.spec; if(!sp) return;
+    S.spec=null;
+    gen++; try{ S.ctl&&S.ctl.abort(); }catch(e){} S.busy=false;
+    const i=S.turns.indexOf(sp.turn); if(i>=0) S.turns.splice(i,1);
+    sp.release(false);
+  }
+  function commitSpec(text){
+    const sp=S.spec; if(!sp) return false;
+    if(norm(text)!==norm(sp.text)){ cancelSpec(); return false; }
+    S.spec=null; delete sp.turn.pending;
+    clearDeadAir(); S.silences=0;
+    renderCall();
+    sp.release(true);
+    return true;
   }
 
   function endOfTurn(){
     const text=(S.heard+" "+S.interim).trim();
     const tm=S.tm;
-    S.heard=""; S.interim=""; S.tm=null;
-    if(!text||S.phase!=="live"){ updateMouth(); return; }
+    S.heard=""; S.interim=""; S.tm=null; clearTimeout(specTimer);
+    if(!text||S.phase!=="live"){ cancelSpec(); updateMouth(); return; }
+    if(commitSpec(text)){ updateMouth(); return; }
     sendLine(text,tm?measure(text,tm):null);
   }
 
@@ -446,7 +479,7 @@ import * as phone from "./phone.js";
     slug.textContent="INT. "+S.scen.firm.toUpperCase()+" — OUTBOUND · RESIST "+S.diff;
     c.appendChild(slug);
 
-    S.turns.forEach((t)=>{ if(t.side!=="director") c.appendChild(turnNode(t)); });
+    S.turns.forEach((t)=>{ if(t.side!=="director"&&!t.pending) c.appendChild(turnNode(t)); });
 
     const m=el("div","mouth");
     mouthBox=el("div","mouthbox idle");
@@ -492,7 +525,7 @@ import * as phone from "./phone.js";
       if(S.pendingEv==="transferred"){ S.turns.push({side:"rep",text:text,meta:meta||{typed:true}}); $("#say").value=""; renderCall(); }
       return;
     }
-    clearDeadAir(); S.silences=0;
+    cancelSpec(); clearDeadAir(); S.silences=0;
     if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} gen++; S.busy=false; }
     cutThemOff();
     S.turns.push({side:"rep",text:text,meta:meta||{typed:true}});
@@ -546,7 +579,7 @@ import * as phone from "./phone.js";
 
   const TAG=/\[\[\s*(gatekeeper|dm)\s*\|\s*([1-5])\s*\|\s*(none|transferred|booked|hangup)\s*(?:\|\s*(\d{1,2})\s*)?(?:\|\s*([a-z0-9-]*)\s*)?\]\]/i;
 
-  async function askProspect(firstTurn){
+  async function askProspect(firstTurn,opts={}){
     clearDeadAir();
     S.busy=true; paintState();
 
@@ -555,18 +588,23 @@ import * as phone from "./phone.js";
     S.ctl=new AbortController();
     const myGen=gen;
 
-    // the first reply waits behind a ring or two, while the request is already in flight
-    let ringDone=true, lastWhole="";
-    let ringP=null;
+    // The reply is generated right away but may be held back: behind the ring on the
+    // first turn, or until your end-of-turn pause is confirmed on a speculative turn.
+    let open=true, lastWhole="", gateP=null;
+    const waits=[];
     if(firstTurn){
-      ringDone=false; S.ringing=true; paintState();
-      ringP=phone.ring(1+(Math.random()<0.4?1:0),S.callCtl.signal).then(()=>{
-        ringDone=true; S.ringing=false;
+      S.ringing=true; paintState();
+      waits.push(phone.ring(1+(Math.random()<0.4?1:0),S.callCtl.signal).then(()=>{
+        S.ringing=false;
         if(S.phase!=="live") return;
         beat(S.scen.open==="dm"?"Line picks up.":"Line picks up. Front desk.");
         paintState();
-        if(lastWhole) feed(lastWhole);
-      });
+      }));
+    }
+    if(opts.gate) waits.push(opts.gate);
+    if(waits.length){
+      open=false;
+      gateP=Promise.all(waits).then(()=>{ open=true; if(lastWhole) feed(lastWhole); });
     }
 
     let spokenUpTo=0, started=false, idx=-1, tagSeen=false, liveP=null, chunks=0;
@@ -611,9 +649,9 @@ import * as phone from "./phone.js";
 
     try{
       const raw=await streamProspect({scenarioId:S.scen.id,diff:S.diff,who:S.who,
-        turns:firstTurn?[]:transcript()},S.ctl.signal,(whole)=>{ lastWhole=whole; if(ringDone) feed(whole); });
-      if(ringP&&!ringDone) await ringP;
-      S.busy=false;
+        turns:firstTurn?[]:transcript()},S.ctl.signal,(whole)=>{ lastWhole=whole; if(open) feed(whole); });
+      if(gateP) await gateP;
+      if(myGen===gen) S.busy=false;
       if(myGen!==gen||S.phase!=="live"){ paintState(); return; }   // you talked over the whole thing
       const tag=TAG.exec(raw);
       const spoken=raw.replace(/\[\[[\s\S]*$/,"").trim();
@@ -642,8 +680,8 @@ import * as phone from "./phone.js";
       paintState();
       if(ev==="none"&&quiet()) armDeadAir();
     }catch(e){
-      S.busy=false;
-      if(ringP&&!ringDone) await ringP;
+      if(gateP&&!(e&&e.name==="AbortError")) await gateP;
+      if(myGen===gen) S.busy=false;
       paintState();
       if((e&&e.name==="AbortError")||(e&&e.code==="cancelled")||myGen!==gen||S.phase!=="live"){ renderCall(); return; }
       const msg = e&&e.code==="not_granted" ? "The server has no working Anthropic API key — the prospect can’t speak."
@@ -713,6 +751,7 @@ import * as phone from "./phone.js";
   });
 
   function retryLine(){
+    cancelSpec();
     if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} S.busy=false; }
     cutThemOff();
     const i=lastRepIndex();
