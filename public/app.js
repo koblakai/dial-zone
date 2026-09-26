@@ -1,25 +1,36 @@
 import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
+import * as phone from "./phone.js";
 
-  const SILENCE_MS=1100;              // end-of-turn after this much quiet
+  const SILENCE_MS=1000;              // end-of-turn after this much quiet…
+  const TRAILING_MS=2200;             // …or this much if you trailed off mid-thought ("so, um…")
   const ECHO_TAIL_MS=350;             // ignore mic for this long after they stop talking
+  const SR_LAG_MS=300;                // speech-to-text reports words roughly this late
+  const PAUSE_MS=700;                 // a gap this long between words counts as a pause
+  const DEAD_AIR_MS=6000;             // prospect reacts to this much silence from you
+  const DEAD_AIR_TYPED_MS=20000;      // …more slack when you're typing
 
   /* ================= state ================= */
   const S={
     phase:"setup", scen:SCENARIOS[0], diff:3, who:"gatekeeper", step:1, reached:1,
-    turns:[], startedAt:0, tick:null, busy:false, peeks:0, retries:0, peekStep:null,
+    turns:[], startedAt:0, tick:null, busy:false, peeks:0, retries:0, peekStep:null, peekMood:false,
     outcome:null, teardown:null, calls:[], lastId:"", callAt:"",
     mic:"idle",           // idle | live | denied | unsupported
-    speaking:false, spokenNow:"", spokenIdx:0,
-    heard:"", interim:"", vadAt:0, vadTimer:null, ctl:null
+    speaking:false, spokenNow:"", lastSpokeEnd:0, ringing:false,
+    heard:"", interim:"", vadTimer:null, eotMs:SILENCE_MS, ctl:null,
+    tm:null,              // measurements for the turn you're speaking right now
+    deadAir:null, silences:0, callCtl:null,
+    cfg:{brain:true,tts:"browser"}
   };
   const $=(s)=>document.querySelector(s);
   const el=(t,c,x)=>{const n=document.createElement(t); if(c)n.className=c; if(x!=null)n.textContent=x; return n;};
 
   const SR = window.SpeechRecognition||window.webkitSpeechRecognition;
   const TTS = window.speechSynthesis;
-  const voiceOK = !!TTS, srOK = !!SR;
+  const srOK = !!SR;
+  const premium = ()=>S.cfg.tts==="elevenlabs";
+  const voiceOK = ()=>premium()||!!TTS;
 
-  /* ================= voices ================= */
+  /* ================= browser voices (fallback) ================= */
   let voices=[];
   function loadVoices(){ try{ voices=TTS?TTS.getVoices():[]; }catch(e){ voices=[]; } }
   loadVoices();
@@ -58,16 +69,18 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
   function elapsed(){ return S.startedAt?Math.floor((Date.now()-S.startedAt)/1000):0; }
   function fmt(s){ return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
 
+  function speakerName(){ return S.who==="dm"?first(S.scen.dm):(S.scen.gk||"They"); }
   function paintState(){
     const orb=$("#orb"), txt=$("#stateTxt");
     let cls="off", label="Off hook";
     if(S.phase==="live"){
-      if(S.speaking){ cls="talk"; label=(S.who==="dm"?first(S.scen.dm):S.scen.gk||"They")+" is talking"; }
+      if(S.ringing){ cls="think"; label="Ringing…"; }
+      else if(S.speaking){ cls="talk"; label=speakerName()+" is talking"; }
       else if(S.busy){ cls="think"; label="…"; }
       else if(S.mic==="live"){ cls="listen"; label="Your turn — talk"; }
       else if(S.mic==="denied"){ cls="off"; label="Mic blocked — type instead"; }
       else if(S.mic==="unsupported"){ cls="off"; label="No mic here — type instead"; }
-      else { cls="off"; label="Mic off"; }
+      else { cls="off"; label="Mic off — type instead"; }
     }
     orb.className="orb "+cls; txt.textContent=label;
     updateMouth();
@@ -81,27 +94,37 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     const box=el("div","setup");
     box.appendChild(el("p","eyebrow","Levitate SDR · cold call reps"));
     box.appendChild(el("h1","","Pick up the phone."));
-    box.appendChild(el("p","sub","You talk, they talk back. They screen you, stall, and hang up when you earn it. Keys are a silent channel — nothing you press is heard on the line."));
+    box.appendChild(el("p","sub","You talk, they talk back — live. They screen you, throw real objections, and hang up the moment you sound unsure or stop making sense to them. Keys are a silent channel — nothing you press is heard on the line."));
 
-    // mic check
+    if(!S.cfg.brain){
+      const wb=el("div","warnbox");
+      wb.appendChild(el("strong","","The prospect can’t answer yet."));
+      wb.appendChild(el("div","","Start the server with ANTHROPIC_API_KEY set, then reload this page."));
+      box.appendChild(wb);
+    }
+
+    // line check
     const mc=el("fieldset");
     mc.appendChild(el("p","eyebrow","Line check"));
     const row=el("div","checkline");
     const d1=el("span","dot "+(srOK?"":"bad"));
-    const t1=el("span","",srOK?"Mic — not tested":"This browser can’t hear you (use Chrome)");
-    const d2=el("span","dot "+(voiceOK?"ok":"bad"));
-    const t2=el("span","",voiceOK?"Voice out ready":"No voice out here");
+    const t1=el("span","",srOK?"Mic — not tested":"This browser can’t hear you (use Chrome or Edge) — you can type");
+    const d2=el("span","dot "+(voiceOK()?"ok":"bad"));
+    const t2=el("span","",premium()?"Studio voices on":voiceOK()?"Browser voices (set ELEVENLABS_API_KEY for studio voices)":"No voice out here");
     row.appendChild(d1); row.appendChild(t1);
     row.appendChild(el("span","hint","·"));
     row.appendChild(d2); row.appendChild(t2);
     mc.appendChild(row);
     const test=el("button","ghostbtn","Test the line"); test.type="button";
     test.onclick=async()=>{
+      phone.unlock();
       test.disabled=true; t1.textContent="Asking for the mic…"; d1.className="dot wait";
       const ok=await askMic();
       d1.className="dot "+(ok?"ok":"bad");
       t1.textContent= ok?"Mic ready":(S.mic==="denied"?"Mic blocked — allow it in the address bar":"Mic unavailable");
-      if(voiceOK) say("Harlow and Pierce, this is Dana.","f",()=>{});
+      const sc=S.scen, role=sc.gk?"gk":"dm";
+      const who=sc.gk||first(sc.dm);
+      await speakOnce(sc.firm.replace("&","and")+", this is "+who+".",role);
       test.disabled=false;
     };
     mc.appendChild(test);
@@ -135,6 +158,7 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     box.appendChild(f2);
 
     const go=el("button","go","Dial"); go.type="button";
+    go.disabled=!S.cfg.brain;
     go.onclick=startCall;
     box.appendChild(go);
     box.appendChild(el("p","hint","Headphones help — without them the mic can hear the prospect."));
@@ -180,13 +204,13 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     }catch(e){ S.mic="denied"; showFallback(); paintState(); }
   }
   function stopMic(){
-    S.mic="idle"; clearTimeout(S.vadTimer); S.heard=""; S.interim="";
+    S.mic="idle"; clearTimeout(S.vadTimer); S.heard=""; S.interim=""; S.tm=null;
     try{ rec&&(rec.onend=null,rec.stop()); }catch(e){} rec=null; paintState();
   }
   function showFallback(){ $("#fallback").hidden=false; }
 
   /* --- echo rejection: is what we just heard actually the prospect's own voice? --- */
-  function norm(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9 ]/g," ").replace(/\s+/g," ").trim(); }
+  function norm(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9' ]/g," ").replace(/\s+/g," ").trim(); }
   function isEcho(text){
     if(!S.speaking && Date.now()-S.lastSpokeEnd > ECHO_TAIL_MS) return false;
     const heard=norm(text), src=norm(S.spokenNow);
@@ -197,8 +221,27 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     return (hit/hw.length) >= 0.6;                     // mostly their words coming back
   }
 
+  /* --- how you sound: latency, fillers, restarts, pauses, pace --- */
+  const FILLER=/\b(u+m+|u+h+|uhm|erm|er+|ah+|hmm+|mm+|you know|i mean|kind of|sort of|like,|basically)\b/gi;
+  const TRAILING=/\b(and|so|but|or|because|um+|uh+|er+|the|a|an|to|of|with|if|just|kind of|sort of|my|our|your)$/i;
+  function measure(text,tm){
+    const words=norm(text).split(" ").filter(Boolean);
+    const fillers=(text.match(FILLER)||[]).map(f=>{ f=f.toLowerCase().replace(/,$/,""); return /^[aeiouhmr]+$/.test(f)?f.replace(/(.)\1+/g,"$1"):f; });
+    let restarts=0;
+    for(let i=1;i<words.length;i++) if(words[i]===words[i-1]&&words[i].length<=4&&!/^(no|very|ha)$/.test(words[i])) restarts++;
+    restarts+=(text.match(/\b(let me rephrase|what i mean is|i mean to say|scratch that|let me start over)\b/gi)||[]).length;
+    const durMs=Math.max(400,(tm.lastAt-tm.firstAt)+SR_LAG_MS);
+    return {
+      barged:tm.barged,
+      startedAfterMs:tm.barged?null:tm.startedAfterMs,
+      fillers, restarts, pauses:tm.pauses,
+      words:words.length,
+      wpm:words.length>=4?Math.round(words.length/(durMs/60000)):null
+    };
+  }
+
   function onHeard(e){
-    if(S.phase!=="live") return;
+    if(S.phase!=="live"||S.ringing) return;
     let fin="", inter="";
     for(let i=e.resultIndex;i<e.results.length;i++){
       const r=e.results[i];
@@ -209,33 +252,47 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
 
     if(isEcho(all)) return;                            // their voice in our mic — ignore
 
+    const wasTalking=S.speaking;
     if(S.speaking){                                    // real barge-in
       const words=norm(all).split(" ").filter(Boolean);
       if(words.length<2) return;                       // a cough isn't an interruption
       cutThemOff();
     }
 
+    const now=Date.now();
+    if(!S.tm){                                         // first words of a new turn
+      S.tm={firstAt:now,lastAt:now,pauses:0,barged:wasTalking,
+        startedAfterMs:(S.lastSpokeEnd&&!S.busy)?Math.max(0,now-SR_LAG_MS-S.lastSpokeEnd):null};
+    }else{
+      if(now-S.tm.lastAt>PAUSE_MS) S.tm.pauses++;
+      S.tm.lastAt=now;
+    }
+    clearDeadAir();
+
     if(fin) S.heard=(S.heard+" "+fin).trim();
     S.interim=inter.trim();
-    S.vadAt=Date.now();
+    const sofar=(S.heard+" "+S.interim).trim();
+    S.eotMs=TRAILING.test(sofar.replace(/[.,!?…\s]+$/,""))?TRAILING_MS:SILENCE_MS;
     updateMouth();
     clearTimeout(S.vadTimer);
-    S.vadTimer=setTimeout(endOfTurn,SILENCE_MS);
+    S.vadTimer=setTimeout(endOfTurn,S.eotMs);
   }
 
   function endOfTurn(){
     const text=(S.heard+" "+S.interim).trim();
-    S.heard=""; S.interim="";
+    const tm=S.tm;
+    S.heard=""; S.interim=""; S.tm=null;
     if(!text||S.phase!=="live"){ updateMouth(); return; }
-    sendLine(text);
+    sendLine(text,tm?measure(text,tm):null);
   }
 
   /* ================= speaking ================= */
-  let queue=[], speakingChain=false, gen=0;   // gen: bumped on barge-in so late chunks die
-  S.lastSpokeEnd=0;
+  // Each clause is queued as it streams in. With studio voices its audio is
+  // fetched immediately (in parallel) so playback runs back to back.
+  let queue=[], speakingChain=false, gen=0, audioCtl=new AbortController();   // gen: bumped on barge-in so late chunks die
   function say(text,sex,done){
     if(!TTS){ done&&done(); return null; }
-    const u=new SpeechSynthesisUtterance(text);
+    const u=new SpeechSynthesisUtterance(text.replace(/\s*[—–]\s*/g,", "));
     const v=pickVoice(sex); if(v) u.voice=v;
     u.rate=1.07; u.pitch = sex==="m"?0.95:1.03;
     u.onend=()=>{ done&&done(); };
@@ -243,12 +300,31 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     try{ TTS.speak(u); }catch(e){ done&&done(); }
     return u;
   }
-  function beginSpeaking(){ S.speaking=true; S.spokenNow=""; paintState(); }
-  function speakChunk(chunk,sex,myGen){
+  function sexOf(role){ return role==="dm"?(S.scen.dmVoice||"f"):(S.scen.gkVoice||"f"); }
+  function fetchVoice(text,role,previous,signal){
+    return fetch("api/tts",{method:"POST",headers:{"Content-Type":"application/json"},signal,
+      body:JSON.stringify({scenarioId:S.scen.id,role,text,previous})})
+      .then(r=>{ if(!r.ok) throw new Error("tts "+r.status); return r.blob(); })
+      .then(b=>URL.createObjectURL(b));
+  }
+  // one-off line outside a call (line test, "Hear it")
+  async function speakOnce(text,role,sex){
+    try{ TTS&&TTS.cancel(); }catch(e){}
+    if(premium()){
+      try{ const url=await fetchVoice(text,role,""); await phone.playThroughLine(url); URL.revokeObjectURL(url); return; }catch(e){}
+    }
+    await new Promise(r=>say(text,sex||sexOf(role),r));
+  }
+
+  function beginSpeaking(){ S.speaking=true; S.spokenNow=""; S.played=""; clearDeadAir(); paintState(); }
+  function speakChunk(chunk,role,myGen){
     if(!chunk.trim()||myGen!==gen) return;
+    const previous=S.spokenNow.trim();
     S.spokenNow += " "+chunk;
     if(!S.speaking){ S.speaking=true; paintState(); }
-    queue.push({t:chunk,sex:sex,g:myGen});
+    const item={t:chunk,role,g:myGen};
+    if(premium()) item.url=fetchVoice(chunk,role,previous,audioCtl.signal).catch(()=>null);
+    queue.push(item);
     drain();
   }
   function drain(){
@@ -256,37 +332,90 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     const item=queue.shift();
     if(item.g!==gen){ drain(); return; }
     speakingChain=true;
-    say(item.t,item.sex,()=>{
+    const started=()=>{ S.played=(S.played+" "+item.t).trim(); };
+    const next=()=>{
+      if(item.g!==gen) return;                    // cut off; cutThemOff already reset the chain
       speakingChain=false;
       if(queue.length) drain(); else finishSpeaking();
-    });
+    };
+    if(item.url){
+      const sig=audioCtl.signal;
+      item.url.then(async(url)=>{
+        if(item.g!==gen){ if(url) URL.revokeObjectURL(url); return; }
+        if(!url){ started(); say(item.t,sexOf(item.role),next); return; }   // studio voice failed: fall back
+        started();
+        await phone.playThroughLine(url,sig);
+        URL.revokeObjectURL(url);
+        next();
+      });
+    }else{ started(); say(item.t,sexOf(item.role),next); }
   }
   function finishSpeaking(){
     if(queue.length||speakingChain) return;
     if(!S.speaking) return;
     S.speaking=false; S.lastSpokeEnd=Date.now(); paintState(); updateMouth();
+    armDeadAir();
+  }
+  function hushAudio(){
+    gen++; queue=[]; speakingChain=false;
+    audioCtl.abort(); audioCtl=new AbortController();
+    try{ TTS&&TTS.cancel(); }catch(e){}
   }
   function cutThemOff(){
     if(!S.speaking&&!queue.length&&!speakingChain) return false;
-    gen++; queue=[]; speakingChain=false;
-    try{ TTS&&TTS.cancel(); }catch(e){}
+    hushAudio();
+    // keep only what they actually got out before you cut in
     for(let i=S.turns.length-1;i>=0;i--){
-      if(S.turns[i].side==="them"){ S.turns[i].cut=true; break; }
+      const t=S.turns[i];
+      if(t.side!=="them") continue;
+      const said=(S.played||"").trim();
+      if(!said) S.turns.splice(i,1);             // you spoke before a word of theirs was heard
+      else { t.cut=true; if(said.length<t.text.length) t.text=said; }
+      break;
     }
     S.speaking=false; S.lastSpokeEnd=Date.now();
     paintState(); renderCall();
     return true;
   }
+  function quiet(){ return !S.speaking&&!queue.length&&!speakingChain; }
+  function whenQuiet(fn){
+    let n=0;
+    const t=setInterval(()=>{
+      n++;
+      if(S.phase!=="live"){ clearInterval(t); return; }
+      if(quiet()||n>80){ clearInterval(t); fn(); }
+    },200);
+  }
+
+  /* ================= dead air ================= */
+  function armDeadAir(){
+    clearDeadAir();
+    if(S.phase!=="live"||S.busy||S.ringing||S.speaking||S.hold) return;
+    const ms = S.mic==="live" ? DEAD_AIR_MS : DEAD_AIR_TYPED_MS;
+    S.deadAir=setTimeout(()=>{
+      S.deadAir=null;
+      if(S.phase!=="live"||S.busy||S.speaking||S.ringing||S.hold||S.tm||(S.heard+S.interim).trim()||$("#say").value.trim()) return;
+      S.silences++;
+      const secs=Math.round(ms/1000);
+      S.turns.push({side:"note",text:"[silence: the rep has said nothing for "+secs+" seconds]",shown:"Dead air — "+secs+"s"});
+      renderCall();
+      askProspect(false);
+    },ms);
+  }
+  function clearDeadAir(){ clearTimeout(S.deadAir); S.deadAir=null; }
 
   /* ================= the call ================= */
-  function startCall(){
+  async function startCall(){
+    phone.unlock();
     S.phase="live"; S.who=S.scen.open; S.step=S.scen.open==="dm"?2:1; S.reached=S.step;
-    S.turns=[]; S.peeks=0; S.retries=0; S.outcome=null; S.teardown=null;
-    S.lastId="c"+Date.now().toString(36); S.callAt=""; S.peekStep=null; S.heard=""; S.interim="";
+    S.turns=[]; S.peeks=0; S.retries=0; S.outcome=null; S.teardown=null; S.silences=0; S.peekMood=false;
+    S.lastSpokeEnd=0; S.spokenNow=""; S.hold=false; S.pendingEv=null;
+    S.lastId="c"+Date.now().toString(36); S.callAt=""; S.peekStep=null; S.heard=""; S.interim=""; S.tm=null;
+    S.callCtl=new AbortController();
     startClock(); renderKeys(); paintBoard(); renderCall(); renderRail();
     $("#fallback").hidden = srOK && S.mic!=="denied";
     startMic();
-    beat(S.scen.open==="dm"?"Line picks up. Someone answers directly.":"Line picks up. Front desk.");
+    beat("Dialing "+S.scen.firm+"…");
     askProspect(true);
   }
 
@@ -298,6 +427,17 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
 
   let mouthBox=null, mouthLine=null, vadBar=null;
 
+  function turnNode(t){
+    if(t.side==="beat") return el("div","beat"+(t.dir?" dir":""),t.text);
+    if(t.side==="note") return el("div","beat",t.shown||t.text);
+    const d=el("div","turn "+t.side+(t.flagged?" flagged":""));
+    d.appendChild(el("span","cue",t.side==="rep"?"YOU":whoLabel(t.who)));
+    const p=el("p","said"); p.textContent=t.text;
+    if(t.cut) p.appendChild(el("span","cut"," ——"));
+    d.appendChild(p);
+    return d;
+  }
+
   function renderCall(){
     if(S.phase!=="live") { mouthBox=null; return; }
     const w=$("#stage"); w.textContent="";
@@ -306,14 +446,7 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     slug.textContent="INT. "+S.scen.firm.toUpperCase()+" — OUTBOUND · RESIST "+S.diff;
     c.appendChild(slug);
 
-    S.turns.forEach((t)=>{
-      if(t.side==="beat"){ c.appendChild(el("div","beat"+(t.dir?" dir":""),t.text)); return; }
-      const d=el("div","turn "+t.side+(t.flagged?" flagged":""));
-      d.appendChild(el("span","cue",t.side==="rep"?"YOU":whoLabel(t.who)));
-      const p=el("p","said"); p.textContent=t.text;
-      if(t.cut) p.appendChild(el("span","cut"," ——"));
-      d.appendChild(p); c.appendChild(d);
-    });
+    S.turns.forEach((t)=>{ if(t.side!=="director") c.appendChild(turnNode(t)); });
 
     const m=el("div","mouth");
     mouthBox=el("div","mouthbox idle");
@@ -336,7 +469,8 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     else{
       mouthLine.className="waiting";
       mouthLine.textContent =
-        S.speaking?"They’re talking — cut in whenever you like."
+        S.ringing?"Ringing…"
+        :S.speaking?"They’re talking — cut in whenever you like."
         :S.busy?"…"
         :S.mic==="live"?"Listening…"
         :"Type your line below.";
@@ -346,17 +480,22 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     vadBar.style.transform=live?"scaleX(1)":"scaleX(0)";
     if(live) requestAnimationFrame(()=>{
       if(!vadBar) return;
-      vadBar.style.transition="transform "+SILENCE_MS+"ms linear";
+      vadBar.style.transition="transform "+S.eotMs+"ms linear";
       vadBar.style.transform="scaleX(0)";
     });
   }
 
-  function sendLine(text){
+  function sendLine(text,meta){
     text=String(text||"").trim();
     if(!text||S.phase!=="live") return;
+    if(S.hold||S.ringing){                        // call is ending or being transferred
+      if(S.pendingEv==="transferred"){ S.turns.push({side:"rep",text:text,meta:meta||{typed:true}}); $("#say").value=""; renderCall(); }
+      return;
+    }
+    clearDeadAir(); S.silences=0;
     if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} gen++; S.busy=false; }
     cutThemOff();
-    S.turns.push({side:"rep",text:text});
+    S.turns.push({side:"rep",text:text,meta:meta||{typed:true}});
     $("#say").value=""; renderCall();
     askProspect(false);
   }
@@ -366,12 +505,13 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
   }
 
   /* ================= prospect ================= */
-  // what the server needs to rebuild the conversation: spoken lines and director notes only
+  // what the server needs to rebuild the conversation
   function transcript(){
     const out=[];
     S.turns.forEach((t)=>{
-      if(t.side==="rep"||t.side==="them") out.push({side:t.side,text:t.text,cut:!!t.cut,flagged:!!t.flagged});
-      else if(t.side==="beat"&&t.director) out.push({side:"director",text:t.text});
+      if(t.side==="rep") out.push({side:"rep",text:t.text,flagged:!!t.flagged,meta:t.meta||null});
+      else if(t.side==="them") out.push({side:"them",text:t.text,cut:!!t.cut,patience:t.patience??null,objection:t.objection||null,tag:t.tag||null});
+      else if(t.side==="director"||t.side==="note") out.push({side:t.side,text:t.text});
     });
     return out;
   }
@@ -385,10 +525,10 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
       throw Object.assign(new Error(j.message||"HTTP "+r.status),{code:j.code||(r.status===429?"rate_limited":"error")});
     }
     const rd=r.body.getReader(), dec=new TextDecoder();
-    let buf="", text="";
+    let buf="", text="", done=false;
     for(;;){
-      const {value,done}=await rd.read();
-      if(done) break;
+      const {value,done:end}=await rd.read();
+      if(end) break;
       buf+=dec.decode(value,{stream:true});
       let nl;
       while((nl=buf.indexOf("\n"))>=0){
@@ -396,38 +536,62 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
         if(!line) continue;
         const m=JSON.parse(line);
         if(m.delta){ text+=m.delta; onText(text); }
+        else if(m.done) done=true;
         else if(m.error) throw Object.assign(new Error(m.message||m.error),{code:m.error});
       }
     }
+    if(!done) throw Object.assign(new Error("stream ended early"),{code:"error"});
     return text;
   }
 
-  async function askProspect(first){
-    S.busy=true; paintState(); renderCall();
+  const TAG=/\[\[\s*(gatekeeper|dm)\s*\|\s*([1-5])\s*\|\s*(none|transferred|booked|hangup)\s*(?:\|\s*(\d{1,2})\s*)?(?:\|\s*([a-z0-9-]*)\s*)?\]\]/i;
 
-    const sex = S.who==="dm" ? (S.scen.dmVoice||"f") : (S.scen.gkVoice||"f");
+  async function askProspect(firstTurn){
+    clearDeadAir();
+    S.busy=true; paintState();
+
+    const role = S.who==="dm" ? "dm" : "gk";
     const sayer = S.who;
     S.ctl=new AbortController();
     const myGen=gen;
 
-    let spokenUpTo=0, started=false, idx=-1, tagSeen=false, liveP=null;
-    const feed=(whole)=>{
-      if(myGen!==gen) return;                       // you cut in; stop feeding
-      const tagAt=whole.indexOf("[[");
-      const speakable = tagAt>=0 ? whole.slice(0,tagAt) : whole;
-      if(tagAt>=0) tagSeen=true;
+    // the first reply waits behind a ring or two, while the request is already in flight
+    let ringDone=true, lastWhole="";
+    let ringP=null;
+    if(firstTurn){
+      ringDone=false; S.ringing=true; paintState();
+      ringP=phone.ring(1+(Math.random()<0.4?1:0),S.callCtl.signal).then(()=>{
+        ringDone=true; S.ringing=false;
+        if(S.phase!=="live") return;
+        beat(S.scen.open==="dm"?"Line picks up.":"Line picks up. Front desk.");
+        paintState();
+        if(lastWhole) feed(lastWhole);
+      });
+    }
 
-      // voice each clause the moment it lands, so there's no dead air
+    let spokenUpTo=0, started=false, idx=-1, tagSeen=false, liveP=null, chunks=0;
+    const feed=(whole)=>{
+      if(myGen!==gen||S.phase!=="live") return;       // you cut in; stop feeding
+      const tagAt=whole.indexOf("[[");
+      let speakable = tagAt>=0 ? whole.slice(0,tagAt) : whole;
+      if(tagAt>=0) tagSeen=true;
+      if(!tagSeen) speakable=speakable.replace(/\[$/,"");  // a tag may be starting
+
+      // voice each clause the moment it lands, so there's no dead air.
+      // Studio voices sound best in whole sentences; the first chunk may break at a comma.
       const rest=speakable.slice(spokenUpTo);
-      const m=/[.!?…,;](\s|$)/g; let mm, last=-1;
-      while((mm=m.exec(rest))!==null) last=mm.index+1;
+      const soft = !premium() || chunks===0;
+      const m = soft ? /[.!?…,;:](\s|$)/g : /[.!?…](\s|$)/g;
+      let mm, last=-1;
+      while((mm=m.exec(rest))!==null){ if(!soft||mm.index>=10||/[.!?…]/.test(rest[mm.index])) last=mm.index+1; }
       let cut = last>0 ? spokenUpTo+last : (tagSeen&&speakable.length>spokenUpTo ? speakable.length : -1);
       if(cut>spokenUpTo){
         const chunk=speakable.slice(spokenUpTo,cut).trim();
         spokenUpTo=cut;
         if(chunk){
           if(!started){ started=true; beginSpeaking(); }
-          speakChunk(chunk,sex,myGen);
+          chunks++;
+          speakChunk(chunk,role,myGen);
         }
       }
 
@@ -447,42 +611,62 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
 
     try{
       const raw=await streamProspect({scenarioId:S.scen.id,diff:S.diff,who:S.who,
-        turns:first?[]:transcript()},S.ctl.signal,feed);
+        turns:firstTurn?[]:transcript()},S.ctl.signal,(whole)=>{ lastWhole=whole; if(ringDone) feed(whole); });
+      if(ringP&&!ringDone) await ringP;
       S.busy=false;
-      if(myGen!==gen){ paintState(); return; }        // you talked over the whole thing
-      const tag=/\[\[\s*(gatekeeper|dm)\s*\|\s*([1-5])\s*\|\s*(none|transferred|booked|hangup)\s*\]\]/i.exec(raw);
+      if(myGen!==gen||S.phase!=="live"){ paintState(); return; }   // you talked over the whole thing
+      const tag=TAG.exec(raw);
       const spoken=raw.replace(/\[\[[\s\S]*$/,"").trim();
-      if(!spoken){ beat("Line noise. Press R and say that again.","dir"); paintState(); return; }
-      tagSeen=true; feed(raw+(raw.includes("[[")?"":"[["));   // voice whatever's still unsaid
-      if(idx<0){ S.turns.push({side:"them",text:spoken,who:sayer}); idx=S.turns.length-1; }
-      else S.turns[idx].text=spoken;
-      finishSpeakingSoon();
+      if(!spoken&&!(tag&&tag[3].toLowerCase()==="hangup")){ beat("Line noise. Press R and say that again.","dir"); paintState(); armDeadAir(); return; }
+      tagSeen=true; feed(raw.includes("[[")?raw:raw+"[[");      // voice whatever's still unsaid
+      if(spoken){
+        if(idx<0){ S.turns.push({side:"them",text:spoken,who:sayer}); idx=S.turns.length-1; }
+        else S.turns[idx].text=spoken;
+      }
 
       const who = tag?tag[1].toLowerCase():S.who;
       const stp = tag?parseInt(tag[2],10):S.step;
-      const ev  = tag?tag[3].toLowerCase():"none";
+      let ev    = tag?tag[3].toLowerCase():"none";
+      const pat = tag&&tag[4]!=null?Math.min(10,Math.max(0,parseInt(tag[4],10))):null;
+      const obj = tag&&tag[5]?tag[5].toLowerCase():null;
+      if(idx>=0&&tag){ Object.assign(S.turns[idx],{patience:pat,objection:obj,tag:{who,step:Math.min(5,Math.max(1,stp)),ev}}); }
+      if(pat===0&&ev==="none") ev="hangup";                   // out of patience means gone
+      if(ev!=="none"){ S.hold=true; S.pendingEv=ev; }
       S.who=who; S.step=Math.min(5,Math.max(1,stp)); S.reached=Math.max(S.reached,S.step);
-      renderCall(); paintBoard(); paintState(); renderRail();
+      renderCall(); paintBoard(); renderRail();
 
-      if(ev==="transferred") beat("Transferred. "+S.scen.dm+" picks up.");
-      if(ev==="booked"){ S.outcome="booked"; whenQuiet(()=>endCall("booked")); }
-      if(ev==="hangup"){ S.outcome="hangup"; whenQuiet(()=>endCall("hangup")); }
+      if(ev==="transferred"){ transfer(); }
+      else if(ev==="booked"){ S.outcome="booked"; whenQuiet(()=>endCall("booked")); }
+      else if(ev==="hangup"){ S.outcome="hangup"; whenQuiet(()=>endCall("hangup")); }
+      if(quiet()) finishSpeaking();
+      paintState();
+      if(ev==="none"&&quiet()) armDeadAir();
     }catch(e){
-      S.busy=false; paintState();
-      if((e&&e.name==="AbortError")||(e&&e.code==="cancelled")||myGen!==gen){ renderCall(); return; }
+      S.busy=false;
+      if(ringP&&!ringDone) await ringP;
+      paintState();
+      if((e&&e.name==="AbortError")||(e&&e.code==="cancelled")||myGen!==gen||S.phase!=="live"){ renderCall(); return; }
       const msg = e&&e.code==="not_granted" ? "The server has no working Anthropic API key — the prospect can’t speak."
         : e&&e.code==="rate_limited" ? "Too many calls too fast. Give it a minute."
         : "The line dropped. Press R to run that line again.";
       beat(msg,"dir"); renderCall();
     }
   }
-  function finishSpeakingSoon(){ if(!queue.length&&!speakingChain) finishSpeaking(); }
-  function whenQuiet(fn){
-    let n=0;
-    const t=setInterval(()=>{
-      n++;
-      if((!S.speaking&&!queue.length&&!speakingChain)||n>60){ clearInterval(t); fn(); }
-    },250);
+
+  // gatekeeper put you through: a ring, then the decision maker picks up and speaks first
+  function transfer(){
+    whenQuiet(async()=>{
+      if(S.phase!=="live") return;
+      beat("On hold — transferring to "+S.scen.dm+"…");
+      S.ringing=true; paintState();
+      await phone.ring(1,S.callCtl.signal);
+      S.ringing=false;
+      if(S.phase!=="live") return;
+      S.who="dm"; S.hold=false; S.pendingEv=null;
+      beat(S.scen.dm+" picks up.");
+      S.turns.push({side:"note",text:"[You have just been transferred this call. You pick up the phone.]",shown:""});
+      askProspect(false);
+    });
   }
 
   /* ================= silent channel ================= */
@@ -494,6 +678,7 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     {k:"F",label:"Flag",fn:flagLine},
     {k:"M",label:"Mute mic",fn:toggleMic},
     {k:"/",label:"Peek script",fn:peek},
+    {k:"T",label:"Read the room",fn:peekMood},
     {k:"X",label:"Hang up",fn:()=>endCall("hungup"),danger:true}
   ];
   function renderKeys(){
@@ -520,7 +705,7 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     const inField=e.target&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName);
     if(inField){
       if(e.key==="Enter"){ e.preventDefault(); sendLine($("#say").value); return; }
-      if(!e.shiftKey) return;                       // typing wins; Shift+key still signals
+      if(!e.shiftKey){ if(S.deadAir) armDeadAir(); return; }   // typing wins (and buys time); Shift+key still signals
     }
     const k=e.key.toUpperCase();
     const hit=KEYS.find(it=>it.k===k||(it.k==="/"&&(e.key==="/"||e.key==="?")));
@@ -533,17 +718,18 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     const i=lastRepIndex();
     if(i<0){ flash("Nothing to retry yet."); return; }
     const said=S.turns[i].text;
-    S.turns=S.turns.slice(0,i); S.retries++;
+    S.turns=S.turns.slice(0,i); S.retries++; S.hold=false; S.pendingEv=null;
     beat("Take two.","dir");
     if(!$("#fallback").hidden){ $("#say").value=said; }
     flash("Say it again.");
-    paintState(); renderCall(); renderRail();
+    paintState(); renderCall(); renderRail(); armDeadAir();
   }
   function nudge(d){
     const was=S.diff; S.diff=Math.min(5,Math.max(1,S.diff+d));
     if(S.diff===was){ flash(d>0?"Already brutal.":"Already warm."); return; }
-    S.turns.push({side:"beat",text:"[DIRECTOR: resistance is now "+S.diff+" of 5. Adjust from your next line on.]",dir:true,director:true}); renderCall();
-    paintBoard();
+    S.turns.push({side:"director",text:"[DIRECTOR: resistance is now "+S.diff+" of 5. Adjust from your next line on.]"});
+    flash("Resistance "+S.diff+".");
+    paintBoard(); renderCall();
   }
   function flagLine(){
     const i=lastRepIndex(); if(i<0){ flash("Nothing to flag."); return; }
@@ -554,23 +740,31 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     if(S.mic==="live"){ stopMic(); showFallback(); flash("Mic muted."); }
     else if(srOK){ startMic(); flash("Mic live."); }
     else flash("No mic in this browser.");
+    armDeadAir();
   }
   function peek(){
     S.peeks++; S.peekStep=STEPS[S.step-1]; renderRail();
     flash("Peeked — "+S.peeks+" so far.");
   }
+  function peekMood(){
+    S.peeks++; S.peekMood=true; renderRail();
+    flash("Reading the room — counts as a peek.");
+  }
 
   $("#sendBtn").onclick=()=>sendLine($("#say").value);
+  $("#say").addEventListener("input",()=>{ if(S.deadAir) armDeadAir(); });
 
   /* ================= end ================= */
   function endCall(how){
     if(S.phase!=="live") return;
     try{ S.ctl&&S.ctl.abort(); }catch(e){}
-    queue=[]; speakingChain=false; S.speaking=false;
-    try{ TTS&&TTS.cancel(); }catch(e){}
+    try{ S.callCtl&&S.callCtl.abort(); }catch(e){}
+    hushAudio(); S.speaking=false; S.ringing=false;
+    clearDeadAir();
     stopMic(); clearInterval(S.tick); S.tick=null;
     S.phase="ended"; S.outcome=S.outcome||how; S.busy=false;
-    beat(how==="booked"?"Meeting booked. Call over.":how==="hangup"?"They hung up.":"You hung up.");
+    if(S.outcome==="hangup") phone.disconnected(); else phone.hangup();
+    beat(S.outcome==="booked"?"Meeting booked. Call over.":S.outcome==="hangup"?"They hung up.":"You hung up.");
     paintBoard(); paintState(); renderEnd(); renderRail(); logCall(null);
   }
 
@@ -579,7 +773,7 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     const s=el("div","sheet");
     s.appendChild(el("p","eyebrow",S.scen.firm+" · resist "+S.diff+" · "+fmt(elapsed())));
     s.appendChild(el("p","verdict",
-      S.outcome==="booked"?"Thirty minutes on the calendar.":S.outcome==="hangup"?"They ended it.":"You ended it."));
+      S.outcome==="booked"?"Thirty minutes on the calendar.":S.outcome==="hangup"?"They hung up on you.":"You ended it."));
     s.appendChild(el("p","sub","Reached step "+S.reached+" of 5"
       +(S.retries?" · "+S.retries+" retr"+(S.retries>1?"ies":"y"):"")
       +(S.peeks?" · "+S.peeks+" peek"+(S.peeks>1?"s":""):"")+"."));
@@ -589,21 +783,47 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
     grade.onclick=()=>getTeardown(grade);
     const again=el("button","ghostbtn","Dial again"); again.type="button";
     again.onclick=()=>{ S.phase="setup"; $("#clock").textContent="0:00"; renderSetup(); renderRail(); };
-    acts.appendChild(grade); acts.appendChild(again); s.appendChild(acts);
+    if(S.teardown) grade.remove(); else acts.appendChild(grade);
+    acts.appendChild(again); s.appendChild(acts);
 
     const hold=el("div"); hold.id="tdown"; s.appendChild(hold);
     if(S.teardown) paintTeardown(S.teardown,hold);
+
+    const moods=S.turns.filter(t=>t.side==="them"&&t.patience!=null);
+    if(moods.length){
+      const mw=el("div");
+      mw.appendChild(el("p","eyebrow","Their patience, line by line"));
+      const tl=el("div","moodline");
+      moods.forEach((t)=>{
+        const col=el("div","moodcol");
+        const bar=el("i"); bar.style.height=(t.patience*10)+"%";
+        bar.className=t.patience<=3?"low":t.patience<=6?"mid":"";
+        col.appendChild(bar);
+        col.title=t.patience+"/10"+(t.objection&&t.objection!=="none"?" · "+t.objection.replace(/-/g," "):"")+" — “"+t.text+"”";
+        tl.appendChild(col);
+      });
+      mw.appendChild(tl);
+      const objs=[...new Set(moods.map(t=>t.objection).filter(o=>o&&o!=="none"))];
+      if(objs.length) mw.appendChild(el("p","hint","Objections thrown: "+objs.map(o=>o.replace(/-/g," ")).join(" · ")));
+      s.appendChild(mw);
+    }
 
     const t=el("div");
     t.appendChild(el("p","eyebrow","The call"));
     const sc=el("div","call");
     S.turns.forEach((x)=>{
-      if(x.side==="beat"){ sc.appendChild(el("div","beat"+(x.dir?" dir":""),x.text)); return; }
-      const d=el("div","turn "+x.side+(x.flagged?" flagged":""));
-      d.appendChild(el("span","cue",x.side==="rep"?"YOU":whoLabel(x.who)));
-      const p=el("p","said"); p.textContent=x.text;
-      if(x.cut) p.appendChild(el("span","cut"," ——"));
-      d.appendChild(p); sc.appendChild(d);
+      if(x.side==="director"||(x.side==="note"&&!x.shown)) return;
+      const n=turnNode(x);
+      if(x.side==="rep"&&x.meta&&!x.meta.typed){
+        const m=x.meta, bits=[];
+        if(m.barged) bits.push("cut in"); else if(m.startedAfterMs!=null) bits.push((m.startedAfterMs/1000).toFixed(1)+"s to start");
+        if(m.fillers&&m.fillers.length) bits.push(m.fillers.length+" filler"+(m.fillers.length>1?"s":""));
+        if(m.restarts) bits.push(m.restarts+" restart"+(m.restarts>1?"s":""));
+        if(m.pauses) bits.push(m.pauses+" pause"+(m.pauses>1?"s":""));
+        if(m.wpm) bits.push(m.wpm+" wpm");
+        if(bits.length) n.appendChild(el("span","meta",bits.join(" · ")));
+      }
+      sc.appendChild(n);
     });
     t.appendChild(sc); s.appendChild(t);
     w.appendChild(s);
@@ -639,6 +859,12 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
       g.appendChild(f);
     }
     if(r.verdict) g.appendChild(el("p","verdict",String(r.verdict)));
+    if(r.delivery){
+      const d=el("div","delivery");
+      d.appendChild(el("p","eyebrow","How you sounded"));
+      d.appendChild(el("p","",String(r.delivery)));
+      g.appendChild(d);
+    }
     if(Array.isArray(r.steps)&&r.steps.length){
       const wrap=el("div","grades");
       r.steps.forEach((st)=>{
@@ -661,8 +887,8 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
       const b=el("div","good"); b.appendChild(el("span","k","Say this"));
       b.appendChild(el("p","said",String(r.worst.instead||"")));
       const hear=el("button","ghostbtn","Hear it"); hear.type="button";
-      hear.onclick=()=>{ try{TTS&&TTS.cancel();}catch(e){} say(String(r.worst.instead||""),"m",()=>{}); };
-      if(voiceOK) b.appendChild(hear);
+      hear.onclick=()=>{ phone.unlock(); speakOnce(String(r.worst.instead||""),"rep","m"); };
+      if(voiceOK()) b.appendChild(hear);
       sw.appendChild(a); sw.appendChild(b); g.appendChild(sw);
     }
     hold.appendChild(g);
@@ -733,6 +959,19 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
       });
       s2.appendChild(cl);
       if(peekStep) s2.appendChild(el("div","peek",peekStep.line));
+      if(S.peekMood){
+        const lt=[...S.turns].reverse().find(t=>t.side==="them"&&t.patience!=null);
+        const mm=el("div","meter"); const ml=el("div","lbl");
+        ml.appendChild(el("span","","Their patience"));
+        ml.appendChild(el("span","",lt?lt.patience+" / 10":"—"));
+        mm.appendChild(ml);
+        const tr=el("div","track"); const fl=el("div","fill");
+        fl.style.width=(lt?lt.patience*10:0)+"%";
+        if(lt&&lt.patience<=3) fl.style.background="var(--crit)"; else if(lt&&lt.patience<=6) fl.style.background="var(--warn)";
+        tr.appendChild(fl); mm.appendChild(tr);
+        if(lt&&lt.objection&&lt.objection!=="none") mm.appendChild(el("p","hint","Last objection: "+lt.objection.replace(/-/g," ")));
+        s2.appendChild(mm);
+      }
       w.appendChild(s2);
     }
 
@@ -746,7 +985,7 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
         const g=String(c.grade||"·").toUpperCase();
         r.appendChild(el("span","g "+g,g));
         r.appendChild(el("span","",first(c.firm)));
-        r.appendChild(el("span","w",(c.outcome==="booked"?"booked":"step "+(c.reached||1))+" · "+String(c.at||"").slice(5,10)));
+        r.appendChild(el("span","w",(c.outcome==="booked"?"booked":c.outcome==="hangup"?"hung up · step "+(c.reached||1):"step "+(c.reached||1))+" · "+String(c.at||"").slice(5,10)));
         box.appendChild(r);
       });
       s3.appendChild(box);
@@ -757,6 +996,12 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
   /* ================= boot ================= */
   renderSetup(); renderRail(); paintBoard();
 
+  (async function(){
+    try{
+      const r=await fetch("api/config");
+      if(r.ok){ S.cfg={...S.cfg,...(await r.json())}; renderSetup(); }
+    }catch(e){}
+  })();
   (async function(){
     try{
       const r=await fetch("api/calls");

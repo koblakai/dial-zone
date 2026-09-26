@@ -21,13 +21,17 @@ export const STEPS = [
 
 export const SCENARIOS = [
   {id:"harlow",firm:"Harlow & Pierce",detail:"6 attorneys, family law, Durham. Site says they treat every client like family.",
-   dm:"Lindsay Harlow",dmRole:"managing partner",dmVoice:"f",gk:"Dana",gkRole:"front desk",gkVoice:"f",open:"gatekeeper",tag:"Gatekeeper"},
+   dm:"Lindsay Harlow",dmRole:"managing partner",dmVoice:"f",gk:"Dana",gkRole:"front desk",gkVoice:"f",open:"gatekeeper",tag:"Gatekeeper",
+   gkVoiceId:"EXAVITQu4vr4xnSDxMaL",dmVoiceId:"XrExE9yKIg1WjnnlVkGX"},
   {id:"okafor",firm:"Okafor Injury Law",detail:"Solo personal-injury attorney, 22 years in Raleigh, runs on referrals.",
-   dm:"Sam Okafor",dmRole:"owner",dmVoice:"m",gk:"Renee",gkRole:"paralegal who screens hard",gkVoice:"f",open:"gatekeeper",tag:"Hard screen"},
+   dm:"Sam Okafor",dmRole:"owner",dmVoice:"m",gk:"Renee",gkRole:"paralegal who screens hard",gkVoice:"f",open:"gatekeeper",tag:"Hard screen",
+   gkVoiceId:"cgSgspJ2msm6clMCkdW9",dmVoiceId:"nPczCjzI2devNBz1zQrb"},
   {id:"castellan",firm:"Castellan Estate Group",detail:"14 attorneys, estate planning, Cary. High-touch clients, long relationships.",
-   dm:"Ruth Castellan",dmRole:"founding partner",dmVoice:"f",gk:"Marcus",gkRole:"office manager",gkVoice:"m",open:"gatekeeper",tag:"Bigger firm"},
+   dm:"Ruth Castellan",dmRole:"founding partner",dmVoice:"f",gk:"Marcus",gkRole:"office manager",gkVoice:"m",open:"gatekeeper",tag:"Bigger firm",
+   gkVoiceId:"cjVigY5qzO86Huf0OWal",dmVoiceId:"21m00Tcm4TlvDq8ikWAM"},
   {id:"brandt",firm:"Brandt & Vo",detail:"4 attorneys, business formation, Chapel Hill. Partner answers his own phone.",
-   dm:"Teddy Brandt",dmRole:"partner",dmVoice:"m",gk:"",gkRole:"",gkVoice:"",open:"dm",tag:"Straight to the DM"}
+   dm:"Teddy Brandt",dmRole:"partner",dmVoice:"m",gk:"",gkRole:"",gkVoice:"",open:"dm",tag:"Straight to the DM",
+   gkVoiceId:"",dmVoiceId:"iP95p4xoKVk53GoZ742B"}
 ];
 
 export const DIALS_TARGET = 130, CONNECT_TARGET = 0.17;
@@ -69,6 +73,21 @@ sc.gk?("Gatekeeper: "+sc.gk+", "+sc.gkRole+"."):"There is no gatekeeper — the 
   ].join("\n");
 }
 
+// How the rep sounded, as the prospect heard it.
+export function deliveryLine(m) {
+  if (!m || m.typed) return "";
+  const parts = [];
+  if (m.barged) parts.push("started while you were still talking");
+  else if (m.startedAfterMs != null) parts.push(`started ${(m.startedAfterMs / 1000).toFixed(1)}s after you stopped`);
+  const f = m.fillers || [];
+  parts.push(f.length ? `${f.length} filler${f.length > 1 ? "s" : ""} (${[...new Set(f)].join(", ")})` : "no fillers");
+  if (m.restarts) parts.push(`${m.restarts} restart${m.restarts > 1 ? "s" : ""}`);
+  if (m.pauses) parts.push(`${m.pauses} pause${m.pauses > 1 ? "s" : ""} mid-sentence`);
+  if (m.wpm) parts.push(`${Math.round(m.wpm)} wpm`);
+  if (m.words != null) parts.push(`${m.words} words`);
+  return `[delivery: ${parts.join(" · ")}]`;
+}
+
 /* ---------- grading ---------- */
 export const RUBRIC = [
 "THE FIVE STEPS AND THEIR RULES",
@@ -80,8 +99,12 @@ export const RUBRIC = [
 ].join("\n");
 
 export function gradePrompt({sc, diff, outcome, reached, turns}){
-  const lines = turns.filter(t=>t.side==="rep"||t.side==="them")
-    .map(t=>(t.side==="rep"?"REP: ":"THEM: ")+t.text+(t.cut?" [cut off]":"")).join("\n");
+  const lines = turns.map(t=>{
+    if(t.side==="rep"){ const d=deliveryLine(t.meta); return "REP: "+t.text+(d?"\n     "+d:""); }
+    if(t.side==="them") return "THEM: "+t.text+(t.cut?" [cut off]":"")
+      +(t.patience!=null||t.objection?"   {patience "+(t.patience??"?")+"/10"+(t.objection&&t.objection!=="none"?", objection: "+t.objection:"")+"}":"");
+    return t.text;
+  }).join("\n");
   const flagged = turns.filter(t=>t.side==="rep"&&t.flagged).map(t=>t.text);
   return [
 "Grade this practice cold call by a brand-new Levitate SDR against the framework below. Be specific and hard but useful. Quote the rep's actual words when you fault a line.",
@@ -94,6 +117,8 @@ flagged.length?("The rep flagged these of their own lines for review: "+flagged.
 "","THE CALL","---",lines,"---","",
 "Grade only the steps the rep actually reached. For each: a letter grade A-F, up to three short phrases for what they hit and what they missed.",
 "worst.said = the rep's single weakest exact line; worst.instead = the line they should have said, in the framework's voice.",
-"fix = the one thing to change next call, under 20 words. verdict = one sentence, under 20 words."
+"fix = the one thing to change next call, under 20 words. verdict = one sentence, under 20 words.",
+"delivery = one or two sentences on how the rep SOUNDED, from the [delivery: …] measurements (response latency, fillers, restarts, pauses, pace) and where hesitation cost them patience. If there are no delivery measurements, say it was a typed call.",
+"The {patience n/10} after each prospect line is the prospect's remaining patience; use drops to pinpoint which rep lines hurt."
   ].join("\n");
 }

@@ -177,3 +177,14 @@
   .swap .bad .said{color:var(--crit)} .swap .good .said{color:var(--line)}
   .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+  /* ---------- patience + delivery ---------- */
+  .moodline{display:flex;align-items:flex-end;gap:3px;height:64px;padding:6px 8px;background:var(--panel);
+    border:1px solid var(--rule)}
+  .moodcol{flex:1 1 0;max-width:34px;height:100%;display:flex;align-items:flex-end;cursor:help}
+  .moodcol i{display:block;width:100%;min-height:2px;background:var(--line)}
+  .moodcol i.mid{background:var(--warn)} .moodcol i.low{background:var(--crit)}
+  .turn .meta{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--dim);
+    padding-left:16px;text-transform:uppercase}
+  .delivery{border:1px solid var(--rule);border-left:4px solid var(--warn);padding:11px 13px;background:var(--panel)}
+  .delivery p:last-child{margin:0;font-size:14px;color:var(--ink2)}

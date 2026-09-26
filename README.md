@@ -1,0 +1,40 @@
+# The Dial Room
+
+Cold-call practice for Levitate SDRs. You pick up the phone and talk out loud; an AI prospect answers in real time, screens you at the front desk, throws real objections, and hangs up when you sound unsure or stop making sense to them. When the call ends, you get a step-by-step grade against the five-step framework (Connect → Hook → Pitch → Qualify → Close), including how you *sounded*.
+
+## Run it
+
+```bash
+npm install
+cp .env.example .env        # then put your key in ANTHROPIC_API_KEY
+npm start                   # http://localhost:3000
+```
+
+Open it in **Chrome or Edge** (they have built-in speech recognition), allow the microphone, and press **Dial**. Headphones help, so the mic doesn't pick up the prospect. Other browsers still work, but you type your lines instead of speaking them.
+
+| Variable | Needed | What it does |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | yes | The prospect's brain and the grader (Claude). |
+| `ELEVENLABS_API_KEY` | no | Realistic studio voices for the prospect. Without it the browser's built-in voices are used. |
+| `PROSPECT_MODEL` / `GRADER_MODEL` | no | Default `claude-opus-5`. A faster model (e.g. `claude-sonnet-5`) cuts response time. |
+| `PROSPECT_EFFORT` | no | Default `low`, to keep replies snappy. |
+| `LOG_LATENCY` | no | Set to `1` to log time-to-first-word for each prospect reply. |
+
+## What happens on a call
+
+- **It rings.** You hear ringback (one or two rings) before someone picks up; the first reply is already being generated while it rings.
+- **Every turn is live.** The prospect's reply is streamed and spoken sentence by sentence as it arrives, through a telephone-band filter. Start talking and they stop mid-word (barge-in); the history records only what they actually got out.
+- **They hear how you sound.** Each of your turns is measured: how long you took to start, filler words, restarts, pauses mid-sentence, and pace. The prospect gets that as `[delivery: …]` alongside your words and loses patience with hesitation.
+- **Dead air is punished.** Six seconds of silence gets a "Hello?"; more silence gets a hang-up.
+- **Patience is tracked.** The prospect reports its remaining patience (0–10) and the objection it just used after every line. At zero it hangs up. Press **T** during a call to read the room (it counts as a peek); after the call you get patience line by line.
+- **Transfers are real.** When the gatekeeper puts you through you get a hold ring, and then the decision maker picks up and speaks first.
+- **You end on a grade.** Each step you reached gets a letter grade, plus a verdict, the one fix for next call, your worst line against the line you should have said, and a note on delivery.
+
+Keys are a silent channel (the line never hears them): **R** retry your last line · **B** cut in · **H/E** harder/easier · **F** flag a line for the teardown · **M** mute mic · **/** peek at the script · **T** read the room · **X** hang up.
+
+## Code layout
+
+- `server.js`: Express app. `/api/prospect` streams the prospect's reply (NDJSON), `/api/grade` returns a structured teardown, `/api/tts` proxies ElevenLabs, `/api/calls` stores the call log in `data/calls.json`.
+- `public/framework.js`: the five steps, the scenarios and personas, and every prompt. The browser and the server both import it.
+- `public/app.js`: the call loop, covering speech recognition, turn-taking, delivery measurement, dead air, playback and the teardown.
+- `public/phone.js`: synthesized phone audio (ringback, clicks, disconnect tone) and the handset filter.
