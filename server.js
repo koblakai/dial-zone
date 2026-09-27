@@ -72,7 +72,7 @@ function cleanTurns(turns) {
     flagged: !!t?.flagged,
     meta: t?.side === "rep" ? cleanMeta(t.meta) : null,
     patience: t?.side === "them" ? num(t.patience, 0, 10) : null,
-    objection: t?.side === "them" && /^[a-z0-9-]{1,40}$/.test(t?.objection || "") ? t.objection : null,
+    objection: t?.side === "them" ? (String(t?.objection || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || null) : null,
     tag: t?.side === "them" && t?.tag ? {
       who: t.tag.who === "dm" ? "dm" : "gatekeeper",
       step: num(t.tag.step, 1, 5) ?? 1,
@@ -89,15 +89,19 @@ export function toMessages(turns) {
     if (last && last.role === role) last.content += "\n" + text;
     else out.push({ role, content: text });
   };
-  let talkedOver = false;
+  let talkedOver = false, lastTag = null, lastPatience = null;
   for (const t of turns.slice(-40)) {
     if (t.side === "rep") {
       const d = deliveryLine(t.meta);
       push("user", (talkedOver ? "[the rep talked over you]\n" : "") + t.text + (d ? "\n" + d : ""));
       talkedOver = false;
     } else if (t.side === "them") {
-      // keep the prospect's own control tag in history so its patience carries between turns
-      const tag = t.tag ? `\n[[${t.tag.who}|${t.tag.step}|${t.tag.ev}|${t.patience ?? ""}|${t.objection || "none"}]]` : "";
+      // Keep the prospect's own control tag in history so its patience carries between turns.
+      // A line cut off before its tag arrived inherits the previous tag.
+      if (t.tag) { lastTag = t.tag; lastPatience = t.patience; }
+      const tg = t.tag || (lastTag && { ...lastTag, ev: "none" });
+      const pat = t.tag ? t.patience : lastPatience;
+      const tag = tg ? `\n[[${tg.who}|${tg.step}|${tg.ev}|${pat ?? ""}|${t.tag ? (t.objection || "none") : "none"}]]` : "";
       push("assistant", t.text + (t.cut ? " —" : "") + tag);
       talkedOver = t.cut;
     } else {
@@ -135,7 +139,7 @@ app.post("/api/prospect", async (req, res) => {
     model: PROSPECT_MODEL,
     max_tokens: 4000,
     output_config: { effort: PROSPECT_EFFORT },
-    system: prospectSystem(sc, clampDiff(req.body?.diff), who),
+    system: prospectSystem(sc, clampDiff(req.body?.diff), who, clean(req.body?.seed).slice(0, 40)),
     messages,
     cache_control: { type: "ephemeral" },
     ...FALLBACK,
@@ -174,7 +178,7 @@ const Teardown = z.object({
 app.post("/api/grade", async (req, res) => {
   const sc = findScenario(req.body?.scenarioId);
   if (!sc) return res.status(400).json({ code: "bad_request", message: "Unknown scenario." });
-  const outcome = ["booked", "hangup", "hungup"].includes(req.body?.outcome) ? req.body.outcome : "hungup";
+  const outcome = ["booked", "hangup", "hungup", "wrapped"].includes(req.body?.outcome) ? req.body.outcome : "hungup";
   const reached = Math.min(5, Math.max(1, parseInt(req.body?.reached, 10) || 1));
   const prompt = gradePrompt({ sc, diff: clampDiff(req.body?.diff), outcome, reached, turns: cleanTurns(req.body?.turns) });
 
@@ -287,7 +291,7 @@ app.put("/api/calls/:id", async (req, res) => {
     firm: clean(b.firm).slice(0, 80),
     diff: clampDiff(b.diff),
     reached: Math.min(5, Math.max(1, parseInt(b.reached, 10) || 1)),
-    outcome: ["booked", "hangup", "hungup"].includes(b.outcome) ? b.outcome : "hungup",
+    outcome: ["booked", "hangup", "hungup", "wrapped"].includes(b.outcome) ? b.outcome : "hungup",
     seconds: Math.max(0, parseInt(b.seconds, 10) || 0),
     peeks: Math.max(0, parseInt(b.peeks, 10) || 0),
     retries: Math.max(0, parseInt(b.retries, 10) || 0),

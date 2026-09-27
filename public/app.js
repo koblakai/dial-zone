@@ -2,6 +2,7 @@ import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
 import * as phone from "./phone.js";
 
   const SILENCE_MS=1000;              // end-of-turn after this much quiet…
+  const SILENCE_PITCH_MS=1300;        // …a little more once you're pitching or qualifying (longer thoughts)
   const TRAILING_MS=2200;             // …or this much if you trailed off mid-thought ("so, um…")
   const ECHO_TAIL_MS=350;             // ignore mic for this long after they stop talking
   const SR_LAG_MS=300;                // speech-to-text reports words roughly this late
@@ -274,11 +275,12 @@ import * as phone from "./phone.js";
     S.interim=inter.trim();
     const sofar=(S.heard+" "+S.interim).trim();
     if(S.spec&&norm(sofar)!==norm(S.spec.text)) cancelSpec();   // you kept going
-    S.eotMs=TRAILING.test(sofar.replace(/[.,!?…\s]+$/,""))?TRAILING_MS:SILENCE_MS;
+    const base=S.step>=3?SILENCE_PITCH_MS:SILENCE_MS;
+    S.eotMs=TRAILING.test(sofar.replace(/[.,!?…\s]+$/,""))?TRAILING_MS:base;
     updateMouth();
     clearTimeout(S.vadTimer); clearTimeout(specTimer);
     S.vadTimer=setTimeout(endOfTurn,S.eotMs);
-    if(!S.spec&&S.eotMs===SILENCE_MS) specTimer=setTimeout(startSpec,SPEC_MS);
+    if(!S.spec&&S.eotMs===base) specTimer=setTimeout(startSpec,SPEC_MS);
   }
 
   /* --- speculative reply: generate during the end-of-turn pause, release on commit --- */
@@ -577,7 +579,8 @@ import * as phone from "./phone.js";
     return text;
   }
 
-  const TAG=/\[\[\s*(gatekeeper|dm)\s*\|\s*([1-5])\s*\|\s*(none|transferred|booked|hangup)\s*(?:\|\s*(\d{1,2})\s*)?(?:\|\s*([a-z0-9-]*)\s*)?\]\]/i;
+  const TAG=/\[\[\s*(gatekeeper|dm)\s*\|\s*([1-5])\s*\|\s*(none|transferred|booked|hangup)\s*(?:\|\s*(\d{1,2})\s*)?(?:\|\s*([^\]|]*?)\s*)?\]\]/i;
+  const slug=(x)=>String(x||"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,40)||null;
 
   async function askProspect(firstTurn,opts={}){
     clearDeadAir();
@@ -649,7 +652,7 @@ import * as phone from "./phone.js";
 
     try{
       const raw=await streamProspect({scenarioId:S.scen.id,diff:S.diff,who:S.who,
-        turns:firstTurn?[]:transcript()},S.ctl.signal,(whole)=>{ lastWhole=whole; if(open) feed(whole); });
+        seed:S.lastId,turns:firstTurn?[]:transcript()},S.ctl.signal,(whole)=>{ lastWhole=whole; if(open) feed(whole); });
       if(gateP) await gateP;
       if(myGen===gen) S.busy=false;
       if(myGen!==gen||S.phase!=="live"){ paintState(); return; }   // you talked over the whole thing
@@ -666,7 +669,8 @@ import * as phone from "./phone.js";
       const stp = tag?parseInt(tag[2],10):S.step;
       let ev    = tag?tag[3].toLowerCase():"none";
       const pat = tag&&tag[4]!=null?Math.min(10,Math.max(0,parseInt(tag[4],10))):null;
-      const obj = tag&&tag[5]?tag[5].toLowerCase():null;
+      const obj = tag?slug(tag[5]):null;
+      if(ev==="booked"&&sayer!=="dm") ev="none";              // only the decision maker can book
       if(idx>=0&&tag){ Object.assign(S.turns[idx],{patience:pat,objection:obj,tag:{who,step:Math.min(5,Math.max(1,stp)),ev}}); }
       if(pat===0&&ev==="none") ev="hangup";                   // out of patience means gone
       if(ev!=="none"){ S.hold=true; S.pendingEv=ev; }
@@ -675,6 +679,7 @@ import * as phone from "./phone.js";
 
       if(ev==="transferred"){ transfer(); }
       else if(ev==="booked"){ S.outcome="booked"; whenQuiet(()=>endCall("booked")); }
+      else if(ev==="hangup"&&obj==="rep-ended"){ S.outcome="wrapped"; whenQuiet(()=>endCall("wrapped")); }
       else if(ev==="hangup"){ S.outcome="hangup"; whenQuiet(()=>endCall("hangup")); }
       if(quiet()) finishSpeaking();
       paintState();
@@ -803,7 +808,7 @@ import * as phone from "./phone.js";
     stopMic(); clearInterval(S.tick); S.tick=null;
     S.phase="ended"; S.outcome=S.outcome||how; S.busy=false;
     if(S.outcome==="hangup") phone.disconnected(); else phone.hangup();
-    beat(S.outcome==="booked"?"Meeting booked. Call over.":S.outcome==="hangup"?"They hung up.":"You hung up.");
+    beat(S.outcome==="booked"?"Meeting booked. Call over.":S.outcome==="hangup"?"They hung up.":S.outcome==="wrapped"?"Call wrapped up.":"You hung up.");
     paintBoard(); paintState(); renderEnd(); renderRail(); logCall(null);
   }
 
@@ -812,7 +817,8 @@ import * as phone from "./phone.js";
     const s=el("div","sheet");
     s.appendChild(el("p","eyebrow",S.scen.firm+" · resist "+S.diff+" · "+fmt(elapsed())));
     s.appendChild(el("p","verdict",
-      S.outcome==="booked"?"Thirty minutes on the calendar.":S.outcome==="hangup"?"They hung up on you.":"You ended it."));
+      S.outcome==="booked"?"Thirty minutes on the calendar.":S.outcome==="hangup"?"They hung up on you."
+      :S.outcome==="wrapped"?"You settled for a follow-up, not a meeting.":"You ended it."));
     s.appendChild(el("p","sub","Reached step "+S.reached+" of 5"
       +(S.retries?" · "+S.retries+" retr"+(S.retries>1?"ies":"y"):"")
       +(S.peeks?" · "+S.peeks+" peek"+(S.peeks>1?"s":""):"")+"."));
@@ -1024,7 +1030,7 @@ import * as phone from "./phone.js";
         const g=String(c.grade||"·").toUpperCase();
         r.appendChild(el("span","g "+g,g));
         r.appendChild(el("span","",first(c.firm)));
-        r.appendChild(el("span","w",(c.outcome==="booked"?"booked":c.outcome==="hangup"?"hung up · step "+(c.reached||1):"step "+(c.reached||1))+" · "+String(c.at||"").slice(5,10)));
+        r.appendChild(el("span","w",(c.outcome==="booked"?"booked":c.outcome==="hangup"?"hung up · step "+(c.reached||1):c.outcome==="wrapped"?"follow-up · step "+(c.reached||1):"step "+(c.reached||1))+" · "+String(c.at||"").slice(5,10)));
         box.appendChild(r);
       });
       s3.appendChild(box);
