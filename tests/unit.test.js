@@ -25,13 +25,13 @@ test("prospectSystem fills every placeholder and keeps a call's shuffle stable",
   assert.equal(prospectSystem(sc, 3, "gatekeeper", "c1"), prospectSystem(sc, 3, "gatekeeper", "c1"));
   const variants = new Set(["a", "b", "c", "d", "e", "f"].map((s) => prospectSystem(sc, 3, "gatekeeper", s)));
   assert.ok(variants.size > 1, "different calls should shuffle objections differently");
-  assert.match(prospectSystem(SCENARIOS[3], 2, "dm", "x"), /Gatekeeper: none/);
+  assert.match(prospectSystem(SCENARIOS.find((s) => !s.gk), 2, "dm", "x"), /Gatekeeper: none/);
 });
 
 test("toMessages starts with the connect note, alternates roles and ends on a user turn", () => {
   const m = toMessages(cleanTurns([
-    { side: "them", text: "Harlow and Pierce, this is Dana.", tag: { who: "gatekeeper", step: 1, ev: "none" }, patience: 6 },
-    { side: "rep", text: "Is Lindsay around?", meta: { startedAfterMs: 800, fillers: [], words: 3 } },
+    { side: "them", text: "Meridian Spine and Performance, this is Kayla.", tag: { who: "gatekeeper", step: 1, ev: "none" }, patience: 6 },
+    { side: "rep", text: "Is Dr. Marsh in?", meta: { startedAfterMs: 800, fillers: [], words: 3 } },
     { side: "them", text: "May I ask", cut: true },
     { side: "rep", text: "It's Sam", meta: { barged: true, fillers: [], words: 2 } },
   ]));

@@ -110,9 +110,10 @@ import * as phone from "./phone.js";
     if(S.phase!=="setup") return;
     const w=$("#stage"); w.textContent="";
     const box=el("div","setup");
-    box.appendChild(el("p","eyebrow","Levitate SDR · cold call reps"));
-    box.appendChild(el("h1","","Pick up the phone."));
-    box.appendChild(el("p","sub","You talk, they talk back — live. They screen you, throw real objections, and hang up the moment you sound unsure or stop making sense to them. Keys are a silent channel — nothing you press is heard on the line."));
+    box.appendChild(el("p","eyebrow","Levitate · Chiropractic · Med spa · Acupuncture"));
+    const h1=el("h1"); h1.append("Pick up the phone. ",el("em","","Mean it."));
+    box.appendChild(h1);
+    box.appendChild(el("p","sub","Premium practices, real front desks, owners who guard their patients and their brand. They answer in real time, raise the objections you’ll actually hear, and quietly end the call the moment you sound unsure or like every other vendor. Keys are a silent channel — nothing you press is heard on the line."));
 
     if(!S.cfg.brain){
       const wb=el("div","warnbox");
@@ -404,7 +405,7 @@ import * as phone from "./phone.js";
     if(norm(text)!==norm(sp.text)){ cancelSpec(); return false; }
     S.spec=null; delete sp.turn.pending;
     clearDeadAir(); S.silences=0;
-    renderCall();
+    renderCall(); paintState();
     sp.release(true);
     return true;
   }

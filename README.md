@@ -1,6 +1,6 @@
 # The Dial Room
 
-Cold-call practice for Levitate SDRs. You pick up the phone and talk out loud; an AI prospect answers in real time, screens you at the front desk, throws real objections, and hangs up when you sound unsure or stop making sense to them. When the call ends, you get a step-by-step grade against the five-step framework (Connect → Hook → Pitch → Qualify → Close), including how you *sounded*.
+Cold-call practice for Levitate SDRs calling premium chiropractic, med spa and acupuncture practices. You pick up the phone and talk out loud; an AI prospect answers in real time, screens you at the front desk, throws real objections, and hangs up when you sound unsure or stop making sense to them. When the call ends, you get a step-by-step grade against the five-step framework (Connect → Hook → Pitch → Qualify → Close), including how you *sounded*.
 
 ## Run it
 

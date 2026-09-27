@@ -21,19 +21,19 @@ try{
   await p.goto(appUrl);
   await p.waitForTimeout(600);
   await p.click("button.go");
-  await waitText(/Harlow and Pierce, this is Dana/i);
+  await waitText(/Meridian Spine and Performance, this is Kayla/i);
   ok(true,"ring + pickup");
   if(mode!=="premium"){
     // the mic hears their greeting while it plays; the final lands ~0.9 s after it ends (fake TTS ~2.7 s)
-    await p.evaluate(()=>__echoStream("Harlow and Pierce this is Dana how can I help you".split(" "),220,3600));
+    await p.evaluate(()=>__echoStream("Meridian Spine and Performance this is Kayla how can I help you".split(" "),220,3600));
   }
   if(mode==="premium"){
     await waitListening();
     // late final: Chrome marks the result final 1.6 s after the last word (after end of turn)
-    await p.evaluate(()=>__speak("Hey it's Sam I needed to speak with Lindsay is she around".split(" "),120,1600));
+    await p.evaluate(()=>__speak("Hey it's Sam I needed to speak with Dr Marsh is he in between patients".split(" "),120,1600));
     await waitText(/what this is regarding/);
     await p.waitForTimeout(2500);
-    ok(await count(/I needed to speak with Lindsay/g)===1, "late final does not duplicate the rep line (count="+await count(/I needed to speak with Lindsay/g)+")");
+    ok(await count(/I needed to speak with Dr Marsh/g)===1, "late final does not duplicate the rep line (count="+await count(/I needed to speak with Dr Marsh/g)+")");
     ok((await p.evaluate(()=>window.__sessions))>=2, "unfinished words at end of turn restart the recognition session");
     await waitListening();
     await p.evaluate(()=>__speak("It's Sam calling from Levitate".split(" "),[120,650,120,120,120]));
@@ -43,10 +43,10 @@ try{
     await p.keyboard.press("r");
     await p.waitForTimeout(4500);
     const s1=await stage();
-    ok(/Take two/i.test(s1) && !/Lindsay Harlow picks up/i.test(s1), "retry during transfer cancels it");
+    ok(/Take two/i.test(s1) && !/Dr. Evan Marsh picks up/i.test(s1), "retry during transfer cancels it");
     await waitListening();
     await p.evaluate(()=>__speak("It's Sam calling from Levitate".split(" "),120));
-    await waitText(/This is Lindsay/,25000);
+    await waitText(/This is Evan/,25000);
     ok(!/You have just been transferred/.test(await stage()),"transfer note hidden from live transcript");
     await waitListening();
     await p.waitForTimeout(2200);
@@ -60,7 +60,7 @@ try{
       } else {
     await waitListening();
     await p.waitForTimeout(2600);
-    ok(!/YOU\s*\n\s*Harlow and Pierce/i.test(await stage()),"late echo of the prospect is ignored");
+    ok(!/YOU\s*\n\s*Meridian Spine/i.test(await stage()),"late echo of the prospect is ignored");
     await waitText(/Anyone there/,15000);
     ok(/DEAD AIR/i.test(await stage()),"dead air -> 'Hello? Anyone there?'");
     // B cuts them off and dead air re-arms

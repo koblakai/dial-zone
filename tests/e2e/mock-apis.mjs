@@ -12,11 +12,11 @@ function reply(body){
   const msgs=body.messages||[]; const last=msgs[msgs.length-1]?.content||"";
   const L=typeof last==="string"?last:JSON.stringify(last);
   if(/\[silence/.test(L)) return "Hello? Anyone there?\n[[gatekeeper|1|none|5|none]]";
-  if(/\[You have just been transferred/.test(L)) return "This is Lindsay.\n[[dm|2|none|7|none]]";
+  if(/\[You have just been transferred/.test(L)) return "This is Evan.\n[[dm|2|none|7|none]]";
   if(/fillers \(/.test(L) && /[3-9] fillers/.test(L)) return "I'm going to stop you there. We're all set, thanks.\n[[dm|2|hangup|0|not-interested]]";
   if(/Levitate/.test(L)) return "Okay, one moment, I'll put you through.\n[[dm|1|transferred|7|none]]";
-  if(/Lindsay/.test(L)) return "Can I ask what this is regarding?\n[[gatekeeper|1|none|7|whats-this-regarding]]";
-  if(msgs.length<=1) return "Harlow and Pierce, this is Dana, how can I help you?\n[[gatekeeper|1|none|8|none]]";
+  if(/Marsh/.test(L)) return "Can I ask what this is regarding?\n[[gatekeeper|1|none|7|whats-this-regarding]]";
+  if(msgs.length<=1) return "Meridian Spine and Performance, this is Kayla, how can I help you?\n[[gatekeeper|1|none|8|none]]";
   return "Mm-hm. Go on, I'm listening, but make it quick please.\n[[dm|3|none|6|none]]";
 }
 export function startMock(port=0){ return new Promise((resolve)=>{ const srv=http.createServer((req,res)=>{

@@ -1,22 +1,24 @@
 [hidden]{display:none!important}
   :root{
-    --ground:#DCDCD6; --panel:#F1F1EC; --panel2:#E4E5DE; --ink:#15171A; --ink2:#474B49;
-    --dim:#797D79; --rule:#C3C4BD; --line:#0B6E4F; --warn:#8E5418; --crit:#972C2C;
-    --onLine:#F3F8F4; --flag:#8E5418; --hot:#9A2B2B;
-    --sans:"Archivo","Helvetica Neue",Arial,sans-serif;
-    --mono:"Courier Prime","Courier New",Courier,monospace;
+    --ground:#F4F0E8; --panel:#FBF9F4; --panel2:#ECE6DA; --ink:#1E1C19; --ink2:#4A463F;
+    --dim:#8A8479; --rule:#DDD5C7; --line:#46604F; --warn:#9A6B2F; --crit:#9B3B32;
+    --onLine:#F7F4EC; --flag:#9A6B2F; --hot:#9B3B32; --gold:#A8875A;
+    --sans:"Inter","Helvetica Neue",Arial,sans-serif;
+    --mono:"Inter","Helvetica Neue",Arial,sans-serif;
+    --serif:"Newsreader","Iowan Old Style",Georgia,serif;
+    --radius:10px;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
-      --ground:#121413; --panel:#1B1E1C; --panel2:#242825; --ink:#E9EBE6; --ink2:#B4B9B3;
-      --dim:#7F857F; --rule:#333835; --line:#43C394; --warn:#D99C4B; --crit:#E46C62;
-      --onLine:#0A1310; --flag:#D99C4B; --hot:#E46C62;
+      --ground:#151412; --panel:#1D1B18; --panel2:#282520; --ink:#EDE8DF; --ink2:#C1B9AC;
+      --dim:#8C8578; --rule:#34302A; --line:#9DBBA6; --warn:#D2A56A; --crit:#E0877C;
+      --onLine:#141512; --flag:#D2A56A; --hot:#E0877C; --gold:#C9A876;
     }
   }
   :root[data-theme="dark"]{
-    --ground:#121413; --panel:#1B1E1C; --panel2:#242825; --ink:#E9EBE6; --ink2:#B4B9B3;
-    --dim:#7F857F; --rule:#333835; --line:#43C394; --warn:#D99C4B; --crit:#E46C62;
-    --onLine:#0A1310; --flag:#D99C4B; --hot:#E46C62;
+    --ground:#151412; --panel:#1D1B18; --panel2:#282520; --ink:#EDE8DF; --ink2:#C1B9AC;
+    --dim:#8C8578; --rule:#34302A; --line:#9DBBA6; --warn:#D2A56A; --crit:#E0877C;
+    --onLine:#141512; --flag:#D2A56A; --hot:#E0877C; --gold:#C9A876;
   }
   *{box-sizing:border-box}
   html,body{height:100%}
@@ -190,3 +192,31 @@
   .delivery p:last-child{margin:0;font-size:14px;color:var(--ink2)}
   .stagepeek{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
   .stagepeek .peek{margin-top:0}
+
+  /* ---------- premium finish ---------- */
+  body{-webkit-font-smoothing:antialiased;letter-spacing:-.005em}
+  h1{font-family:var(--serif);font-weight:400;letter-spacing:-.015em;font-size:clamp(34px,6vw,54px);line-height:1.02}
+  h1 em{font-style:italic;color:var(--line)}
+  .sub{font-size:15px;line-height:1.6}
+  .eyebrow,.cue,.slug,.rtitle,.stat span,.meter .lbl,.rung,.notch,.key,.hint,.beat,.stateTxt,.card em,.gr h4,.swap .k{letter-spacing:.14em}
+  .mark{font-family:var(--serif);font-weight:500;font-size:17px;letter-spacing:.01em;text-transform:none;color:var(--ink)}
+  .said{font-family:var(--serif);font-size:18px;line-height:1.55}
+  .mouthbox .said{font-size:19px}
+  .turn.rep .said{border-left-color:var(--line)}
+  .verdict{font-family:var(--serif);font-weight:400;letter-spacing:-.01em}
+  .fix p{font-family:var(--serif);font-weight:500;font-size:18px}
+  .stat b{font-family:var(--serif);font-weight:400}
+  .card,.go,.ghostbtn,.dial button,.warnbox,.mouthbox,.fix,.delivery,.grades,.swap,.stats,.log,.peek,#say,.send,.key,.moodline,.track{border-radius:var(--radius)}
+  .grades,.swap,.stats,.log{overflow:hidden}
+  .card{padding:16px 18px;gap:5px;transition:border-color .15s,box-shadow .15s}
+  .card:hover{box-shadow:0 1px 0 var(--rule),0 8px 24px -16px rgba(30,28,25,.35)}
+  .card b{font-family:var(--serif);font-weight:500;font-size:19px;letter-spacing:-.005em}
+  .card em{color:var(--gold)}
+  .card[aria-pressed="true"]{border-color:var(--line);box-shadow:0 0 0 1px var(--line) inset}
+  .go{font-weight:600;letter-spacing:.16em;padding:15px 30px}
+  .dial button[aria-pressed="true"]{background:var(--line);border-color:var(--line);color:var(--onLine)}
+  .rung{border-radius:999px;padding:4px 10px}
+  .clock{font-family:var(--sans);font-weight:300;font-variant-numeric:tabular-nums}
+  .vad i{background:var(--gold)}
+  .track{overflow:hidden}
+  @media (max-width:860px){ #rail{display:none} }
