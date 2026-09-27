@@ -4,23 +4,32 @@ import * as phone from "./phone.js";
   const SILENCE_MS=1000;              // end-of-turn after this much quiet…
   const SILENCE_PITCH_MS=1300;        // …a little more once you're pitching or qualifying (longer thoughts)
   const TRAILING_MS=2200;             // …or this much if you trailed off mid-thought ("so, um…")
-  const ECHO_TAIL_MS=350;             // ignore mic for this long after they stop talking
+  const ECHO_TAIL_MS=1800;            // speech-to-text finalizes late: keep checking for their voice this long
   const SR_LAG_MS=300;                // speech-to-text reports words roughly this late
   const PAUSE_MS=700;                 // a gap this long between words counts as a pause
   const SPEC_MS=400;                  // start thinking this early; only speak once the turn is really over
   const DEAD_AIR_MS=6000;             // prospect reacts to this much silence from you
   const DEAD_AIR_TYPED_MS=20000;      // …more slack when you're typing
+  const IS_ANDROID=/Android/i.test(navigator.userAgent);
+  const NARROW=window.matchMedia("(max-width:860px)");
 
   /* ================= state ================= */
   const S={
     phase:"setup", scen:SCENARIOS[0], diff:3, who:"gatekeeper", step:1, reached:1,
     turns:[], startedAt:0, tick:null, busy:false, peeks:0, retries:0, peekStep:null, peekMood:false,
     outcome:null, teardown:null, calls:[], lastId:"", callAt:"",
-    mic:"idle",           // idle | live | denied | unsupported
-    speaking:false, spokenNow:"", lastSpokeEnd:0, ringing:false,
-    heard:"", interim:"", vadTimer:null, eotMs:SILENCE_MS, ctl:null,
+    mic:"idle",           // idle | live | denied | failed | unsupported
+    speaking:false,       // a reply is queued or playing
+    audible:false,        // …and sound is actually coming out
+    spokenNow:"", played:"", lastSpokeEnd:0, ringing:false,
+    heard:"", heardSegs:[], interim:"", vadTimer:null, eotMs:SILENCE_MS, ctl:null,
     tm:null,              // measurements for the turn you're speaking right now
+    sr:null, srFails:[],  // speech-recognition bookkeeping for the current session
+    spec:null, reqSeq:0, cutReq:-1, queuedAsk:false,
+    hold:false, pendingEv:null, evSeq:0, pendingQuiet:null, xferCtl:null,
+    pendingNotes:[],
     deadAir:null, silences:0, callCtl:null,
+    lineCheck:{busy:false,text:"",dot:""},
     cfg:{brain:true,tts:"browser"}
   };
   const $=(s)=>document.querySelector(s);
@@ -46,6 +55,12 @@ import * as phone from "./phone.js";
     const pool=nice.length?nice:en;
     const want = sex==="m"?MASC:FEM, avoid = sex==="m"?FEM:MASC;
     return pool.find(v=>want.test(v.name||"")) || pool.find(v=>!avoid.test(v.name||"")) || pool[0];
+  }
+  // iOS only lets speech start later if it was first used inside a tap
+  function unlockAudio(){
+    phone.unlock();
+    if(premium()) phone.primeAudio();
+    try{ if(TTS){ const u=new SpeechSynthesisUtterance(" "); u.volume=0; TTS.speak(u); } }catch(e){}
   }
 
   /* ================= board ================= */
@@ -81,6 +96,7 @@ import * as phone from "./phone.js";
       else if(S.busy&&!S.spec){ cls="think"; label="…"; }
       else if(S.mic==="live"){ cls="listen"; label="Your turn — talk"; }
       else if(S.mic==="denied"){ cls="off"; label="Mic blocked — type instead"; }
+      else if(S.mic==="failed"){ cls="off"; label="Speech service unavailable — type instead"; }
       else if(S.mic==="unsupported"){ cls="off"; label="No mic here — type instead"; }
       else { cls="off"; label="Mic off — type instead"; }
     }
@@ -106,28 +122,31 @@ import * as phone from "./phone.js";
     }
 
     // line check
+    const lc=S.lineCheck;
     const mc=el("fieldset");
     mc.appendChild(el("p","eyebrow","Line check"));
     const row=el("div","checkline");
-    const d1=el("span","dot "+(srOK?"":"bad"));
-    const t1=el("span","",srOK?"Mic — not tested":"This browser can’t hear you (use Chrome or Edge) — you can type");
-    const d2=el("span","dot "+(voiceOK()?"ok":"bad"));
-    const t2=el("span","",premium()?"Studio voices on":voiceOK()?"Browser voices (set ELEVENLABS_API_KEY for studio voices)":"No voice out here");
-    row.appendChild(d1); row.appendChild(t1);
+    const micText = lc.text || (!srOK?"This browser can’t hear you (use Chrome or Edge) — you can type"
+      : S.mic==="denied"?"Mic blocked — allow it in the address bar" : "Mic — not tested");
+    const micDot = lc.dot || (!srOK||S.mic==="denied"?"bad":"");
+    row.appendChild(el("span","dot "+micDot)); row.appendChild(el("span","",micText));
     row.appendChild(el("span","hint","·"));
-    row.appendChild(d2); row.appendChild(t2);
+    row.appendChild(el("span","dot "+(voiceOK()?"ok":"bad")));
+    row.appendChild(el("span","",premium()?"Studio voices on":voiceOK()?"Browser voices (set ELEVENLABS_API_KEY for studio voices)":"No voice out here"));
     mc.appendChild(row);
-    const test=el("button","ghostbtn","Test the line"); test.type="button";
+    const test=el("button","ghostbtn",lc.busy?"Testing…":"Test the line"); test.type="button";
+    test.disabled=lc.busy;
     test.onclick=async()=>{
-      phone.unlock();
-      test.disabled=true; t1.textContent="Asking for the mic…"; d1.className="dot wait";
+      unlockAudio();
+      S.lineCheck={busy:true,text:"Asking for the mic…",dot:"wait"}; renderSetup();
       const ok=await askMic();
-      d1.className="dot "+(ok?"ok":"bad");
-      t1.textContent= ok?"Mic ready":(S.mic==="denied"?"Mic blocked — allow it in the address bar":"Mic unavailable");
+      S.lineCheck={busy:true,
+        text: ok===true?"Mic ready":ok===null?"The browser will ask for the mic when you dial":S.mic==="denied"?"Mic blocked — allow it in the address bar":"Mic unavailable",
+        dot: ok===true?"ok":ok===null?"wait":"bad"};
+      renderSetup();
       const sc=S.scen, role=sc.gk?"gk":"dm";
-      const who=sc.gk||first(sc.dm);
-      await speakOnce(sc.firm.replace("&","and")+", this is "+who+".",role);
-      test.disabled=false;
+      await speakOnce(sc.firm.replace("&","and")+", this is "+(sc.gk||first(sc.dm))+".",role);
+      S.lineCheck={...S.lineCheck,busy:false}; renderSetup();
     };
     mc.appendChild(test);
     box.appendChild(mc);
@@ -169,57 +188,91 @@ import * as phone from "./phone.js";
 
   /* ================= mic ================= */
   let rec=null, restarting=false;
+  // true: mic ready · false: blocked/unavailable · null: can't check here, the recognizer will ask
   async function askMic(){
     if(!srOK){ S.mic="unsupported"; paintState(); return false; }
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) return null;
     try{
-      if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
-        const st=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
-        st.getTracks().forEach(t=>t.stop());
-      }
-      S.mic="idle"; paintState(); return true;
+      const st=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+      st.getTracks().forEach(t=>t.stop());
+      if(S.mic==="denied") S.mic="idle";
+      paintState(); return true;
     }catch(e){
-      // only a refusal is final; anything else, let the recognizer decide
       const n=e&&e.name;
       if(n==="NotAllowedError"||n==="SecurityError"){ S.mic="denied"; paintState(); return false; }
-      S.mic="idle"; paintState(); return false;
+      paintState(); return false;
     }
   }
 
+  // Result indices restart with every recognition session.
+  function newSession(){ S.sr={len:0,skip:0,openIdx:-1,openWords:0,lastInterimIdx:-1,lastInterimText:""}; }
+
   function startMic(){
     if(!srOK){ S.mic="unsupported"; showFallback(); paintState(); return; }
+    S.srFails=[];
     try{
       rec=new SR();
       rec.continuous=true; rec.interimResults=true; rec.lang="en-US"; rec.maxAlternatives=1;
       rec.onresult=onHeard;
       rec.onerror=(e)=>{
         const c=e&&e.error;
-        if(c==="no-speech"||c==="aborted"||c==="audio-capture") return;
-        if(c==="not-allowed"||c==="service-not-allowed"){ S.mic="denied"; showFallback(); paintState(); }
+        if(c==="no-speech"||c==="aborted") return;
+        if(c==="not-allowed"||c==="service-not-allowed"){ micFailed("denied"); return; }
+        srFailure();                                   // network, audio-capture, language-not-supported…
       };
       rec.onend=()=>{
-        if(S.phase==="live"&&S.mic==="live"&&!restarting){
-          restarting=true;
-          setTimeout(()=>{ restarting=false; try{ rec&&rec.start(); }catch(e){} },120);
-        }
+        if(S.phase!=="live"||S.mic!=="live"||restarting) return;
+        restarting=true;
+        setTimeout(()=>{
+          restarting=false;
+          if(S.phase!=="live"||S.mic!=="live"||!rec) return;
+          try{ newSession(); rec.start(); }catch(e){ srFailure(); }
+        },120);
       };
-      rec.start(); S.mic="live"; paintState();
-    }catch(e){ S.mic="denied"; showFallback(); paintState(); }
+      newSession(); rec.start(); S.mic="live"; paintState();
+    }catch(e){ micFailed("failed"); }
+  }
+  function srFailure(){
+    const now=Date.now();
+    S.srFails=S.srFails.filter(t=>now-t<8000); S.srFails.push(now);
+    if(S.srFails.length>=3) micFailed("failed");
+  }
+  function micFailed(state){
+    if(S.tm||(S.heard+S.interim).trim()) endOfTurn();   // keep what you already said
+    teardownRecognizer();
+    S.mic=state;
+    showFallback(); paintState();
+    if(S.phase==="live"){
+      flash(state==="denied"?"Mic blocked — type instead.":"Speech service unavailable — type instead.");
+      armDeadAir();
+    }
+  }
+  function teardownRecognizer(){
+    clearTimeout(S.vadTimer); clearTimeout(specTimer); specTimer=null;
+    S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null;
+    try{ if(rec){ rec.onend=null; rec.onresult=null; rec.onerror=null; rec.abort(); } }catch(e){}
+    rec=null;
   }
   function stopMic(){
-    S.mic="idle"; clearTimeout(S.vadTimer); S.heard=""; S.interim=""; S.tm=null;
-    try{ rec&&(rec.onend=null,rec.stop()); }catch(e){} rec=null; paintState();
+    teardownRecognizer();
+    if(S.mic==="live") S.mic="idle";
+    paintState();
   }
-  function showFallback(){ $("#fallback").hidden=false; }
+  function showFallback(){
+    const f=$("#fallback"); if(!f) return;
+    f.hidden=false;
+    if(S.phase==="live") setTimeout(()=>{ try{ $("#say").focus(); }catch(e){} },0);
+  }
 
   /* --- echo rejection: is what we just heard actually the prospect's own voice? --- */
   function norm(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9' ]/g," ").replace(/\s+/g," ").trim(); }
   function isEcho(text){
-    if(!S.speaking && Date.now()-S.lastSpokeEnd > ECHO_TAIL_MS) return false;
-    const heard=norm(text), src=norm(S.spokenNow);
-    if(!heard||!src) return false;
+    if(!S.audible && Date.now()-S.lastSpokeEnd > ECHO_TAIL_MS) return false;
+    const heard=norm(text), src=new Set(norm(S.spokenNow).split(" "));
+    if(!heard||src.size<=1) return false;
     const hw=heard.split(" ").filter(w=>w.length>2);
-    if(!hw.length) return true;                       // filler while they talk: drop it
-    let hit=0; hw.forEach(w=>{ if(src.indexOf(w)>=0) hit++; });
+    if(!hw.length) return S.audible;                  // filler while they talk: drop it
+    let hit=0; hw.forEach(w=>{ if(src.has(w)) hit++; });
     return (hit/hw.length) >= 0.6;                     // mostly their words coming back
   }
 
@@ -242,37 +295,55 @@ import * as phone from "./phone.js";
     };
   }
 
+  const dropWords=(t,n)=>n>0?String(t).trim().split(/\s+/).slice(n).join(" "):String(t);
+
   function onHeard(e){
-    if(S.phase!=="live"||S.ringing) return;
-    let fin="", inter="";
+    if(S.phase!=="live"||S.ringing||!S.sr) return;
+    const sr=S.sr;
+    sr.len=e.results.length;
+    const finals=[]; let inter="";
     for(let i=e.resultIndex;i<e.results.length;i++){
+      if(i<sr.skip&&i!==sr.openIdx) continue;          // already sent as part of an earlier turn
       const r=e.results[i];
-      if(r.isFinal) fin+=r[0].transcript; else inter+=r[0].transcript;
+      let t=r[0].transcript;
+      if(i===sr.openIdx){                              // was mid-flight when your last turn ended
+        t=dropWords(t,sr.openWords);
+        if(r.isFinal) sr.openIdx=-1;
+      }
+      if(r.isFinal){ if(t.trim()) finals.push(t.trim()); }
+      else { inter+=" "+t; sr.lastInterimIdx=i; sr.lastInterimText=r[0].transcript; }
     }
-    const all=(fin+" "+inter).trim();
+    inter=inter.trim();
+    const all=(finals.join(" ")+" "+inter).trim();
     if(!all) return;
 
     if(isEcho(all)) return;                            // their voice in our mic — ignore
+    S.srFails=[];
 
-    const wasTalking=S.speaking;
-    if(S.speaking){                                    // real barge-in
-      const words=norm(all).split(" ").filter(Boolean);
-      if(words.length<2) return;                       // a cough isn't an interruption
+    const wasTalking=S.audible, wasQueued=S.speaking;
+    if(S.speaking){                                    // barge-in (or their reply hadn't started playing yet)
+      if(norm(all).split(" ").filter(Boolean).length<2) return;   // a cough isn't an interruption
       cutThemOff();
     }
 
     const now=Date.now();
     if(!S.tm){                                         // first words of a new turn
       S.tm={firstAt:now,lastAt:now,pauses:0,barged:wasTalking,
-        startedAfterMs:(S.lastSpokeEnd&&!S.busy)?Math.max(0,now-SR_LAG_MS-S.lastSpokeEnd):null};
+        startedAfterMs:(S.lastSpokeEnd&&!S.busy&&!wasQueued)?Math.max(0,now-SR_LAG_MS-S.lastSpokeEnd):null};
     }else{
       if(now-S.tm.lastAt>PAUSE_MS) S.tm.pauses++;
       S.tm.lastAt=now;
     }
     clearDeadAir();
 
-    if(fin) S.heard=(S.heard+" "+fin).trim();
-    S.interim=inter.trim();
+    finals.forEach((t)=>{
+      const prev=S.heardSegs[S.heardSegs.length-1];
+      // Android repeats finals cumulatively ("is", "is Lindsay", "is Lindsay around")
+      if(IS_ANDROID&&prev&&norm(t).startsWith(norm(prev))) S.heardSegs[S.heardSegs.length-1]=t;
+      else S.heardSegs.push(t);
+    });
+    S.heard=S.heardSegs.join(" ");
+    S.interim=inter;
     const sofar=(S.heard+" "+S.interim).trim();
     if(S.spec&&norm(sofar)!==norm(S.spec.text)) cancelSpec();   // you kept going
     const base=S.step>=3?SILENCE_PITCH_MS:SILENCE_MS;
@@ -283,12 +354,27 @@ import * as phone from "./phone.js";
     if(!S.spec&&S.eotMs===base) specTimer=setTimeout(startSpec,SPEC_MS);
   }
 
+  // Take what you've said so far off the recognizer, and remember it was used
+  // so a late final for the same words isn't heard twice.
+  function consumeUtterance(){
+    const text=(S.heard+" "+S.interim).trim(), tm=S.tm, sr=S.sr;
+    if(sr){
+      sr.skip=sr.len;
+      if(S.interim&&sr.lastInterimIdx>=0){ sr.openIdx=sr.lastInterimIdx; sr.openWords=sr.lastInterimText.trim().split(/\s+/).filter(Boolean).length; }
+      else sr.openIdx=-1;
+    }
+    S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null;
+    clearTimeout(S.vadTimer); clearTimeout(specTimer); specTimer=null;
+    return {text,tm};
+  }
+
   /* --- speculative reply: generate during the end-of-turn pause, release on commit --- */
   let specTimer=null;
   function startSpec(){
     specTimer=null;
     if(S.phase!=="live"||S.spec||S.busy||S.hold||S.ringing||S.speaking||!S.tm) return;
     const text=(S.heard+" "+S.interim).trim(); if(!text) return;
+    flushNotes();
     let release; const gate=new Promise(r=>{ release=r; });
     const turn={side:"rep",text,meta:measure(text,S.tm),pending:true};
     S.turns.push(turn);
@@ -298,7 +384,7 @@ import * as phone from "./phone.js";
   function cancelSpec(){
     const sp=S.spec; if(!sp) return;
     S.spec=null;
-    gen++; try{ S.ctl&&S.ctl.abort(); }catch(e){} S.busy=false;
+    S.reqSeq++; try{ S.ctl&&S.ctl.abort(); }catch(e){} S.busy=false;
     const i=S.turns.indexOf(sp.turn); if(i>=0) S.turns.splice(i,1);
     sp.release(false);
   }
@@ -313,9 +399,7 @@ import * as phone from "./phone.js";
   }
 
   function endOfTurn(){
-    const text=(S.heard+" "+S.interim).trim();
-    const tm=S.tm;
-    S.heard=""; S.interim=""; S.tm=null; clearTimeout(specTimer);
+    const {text,tm}=consumeUtterance();
     if(!text||S.phase!=="live"){ cancelSpec(); updateMouth(); return; }
     if(commitSpec(text)){ updateMouth(); return; }
     sendLine(text,tm?measure(text,tm):null);
@@ -325,17 +409,20 @@ import * as phone from "./phone.js";
   // Each clause is queued as it streams in. With studio voices its audio is
   // fetched immediately (in parallel) so playback runs back to back.
   let queue=[], speakingChain=false, gen=0, audioCtl=new AbortController();   // gen: bumped on barge-in so late chunks die
-  function say(text,sex,done){
-    if(!TTS){ done&&done(); return null; }
-    const u=new SpeechSynthesisUtterance(text.replace(/\s*[—–]\s*/g,", "));
+  function say(text,sex,done,onStart){
+    let finished=false, wd=null, u=null;
+    const fin=()=>{ if(finished) return; finished=true; clearTimeout(wd); done&&done(); };
+    if(!TTS){ fin(); return; }
+    u=new SpeechSynthesisUtterance(text.replace(/\s*[—–]\s*/g,", "));
     const v=pickVoice(sex); if(v) u.voice=v;
     u.rate=1.07; u.pitch = sex==="m"?0.95:1.03;
-    u.onend=()=>{ done&&done(); };
-    u.onerror=()=>{ done&&done(); };
-    try{ TTS.speak(u); }catch(e){ done&&done(); }
-    return u;
+    u.onstart=()=>{ onStart&&onStart(); };
+    u.onend=fin; u.onerror=fin;
+    say.live=u;                                        // keep a reference: some engines drop unreferenced utterances
+    wd=setTimeout(fin,2500+text.length*90);           // some engines never fire end at all
+    try{ TTS.speak(u); }catch(e){ fin(); }
   }
-  function sexOf(role){ return role==="dm"?(S.scen.dmVoice||"f"):(S.scen.gkVoice||"f"); }
+  function sexOf(role){ return role==="dm"?(S.scen.dmVoice||"f"):role==="rep"?"m":(S.scen.gkVoice||"f"); }
   function fetchVoice(text,role,previous,signal){
     return fetch("api/tts",{method:"POST",headers:{"Content-Type":"application/json"},signal,
       body:JSON.stringify({scenarioId:S.scen.id,role,text,previous})})
@@ -346,7 +433,12 @@ import * as phone from "./phone.js";
   async function speakOnce(text,role,sex){
     try{ TTS&&TTS.cancel(); }catch(e){}
     if(premium()){
-      try{ const url=await fetchVoice(text,role,""); await phone.playThroughLine(url); URL.revokeObjectURL(url); return; }catch(e){}
+      try{
+        const url=await fetchVoice(text,role,"");
+        const ok=await phone.playThroughLine(url);
+        URL.revokeObjectURL(url);
+        if(ok) return;
+      }catch(e){}
     }
     await new Promise(r=>say(text,sex||sexOf(role),r));
   }
@@ -367,49 +459,58 @@ import * as phone from "./phone.js";
     const item=queue.shift();
     if(item.g!==gen){ drain(); return; }
     speakingChain=true;
-    const started=()=>{ S.played=(S.played+" "+item.t).trim(); };
+    let begun=false;
+    const started=()=>{ if(begun||item.g!==gen) return; begun=true; S.audible=true; S.played=(S.played+" "+item.t).trim(); };
     const next=()=>{
-      if(item.g!==gen) return;                    // cut off; cutThemOff already reset the chain
+      if(item.g!==gen) return;                    // cut off; hushAudio already reset the chain
       speakingChain=false;
       if(queue.length) drain(); else finishSpeaking();
     };
+    const browserVoice=()=>{ started(); say(item.t,sexOf(item.role),next,started); };
     if(item.url){
       const sig=audioCtl.signal;
       item.url.then(async(url)=>{
         if(item.g!==gen){ if(url) URL.revokeObjectURL(url); return; }
-        if(!url){ started(); say(item.t,sexOf(item.role),next); return; }   // studio voice failed: fall back
-        started();
-        await phone.playThroughLine(url,sig);
-        URL.revokeObjectURL(url);
-        next();
+        if(url){
+          const ok=await phone.playThroughLine(url,sig,started);
+          URL.revokeObjectURL(url);
+          if(ok||item.g!==gen){ next(); return; }
+        }
+        browserVoice();                           // studio voice failed to load or play: use the browser's
       });
-    }else{ started(); say(item.t,sexOf(item.role),next); }
+    }else browserVoice();
   }
   function finishSpeaking(){
     if(queue.length||speakingChain) return;
     if(!S.speaking) return;
-    S.speaking=false; S.lastSpokeEnd=Date.now(); paintState(); updateMouth();
+    S.speaking=false; S.audible=false; S.lastSpokeEnd=Date.now(); paintState(); updateMouth();
     armDeadAir();
   }
   function hushAudio(){
-    gen++; queue=[]; speakingChain=false;
+    gen++;
+    queue.forEach(it=>{ if(it.url) it.url.then(u=>{ if(u) URL.revokeObjectURL(u); }); });
+    queue=[]; speakingChain=false; S.audible=false;
     audioCtl.abort(); audioCtl=new AbortController();
     try{ TTS&&TTS.cancel(); }catch(e){}
   }
   function cutThemOff(){
     if(!S.speaking&&!queue.length&&!speakingChain) return false;
+    const wasAudible=S.audible;
     hushAudio();
+    if(S.busy) S.cutReq=S.reqSeq;               // its reply is still streaming: keep listening for the tag
     // keep only what they actually got out before you cut in
     for(let i=S.turns.length-1;i>=0;i--){
       const t=S.turns[i];
       if(t.side!=="them") continue;
       const said=(S.played||"").trim();
-      if(!said) S.turns.splice(i,1);             // you spoke before a word of theirs was heard
+      if(!said) S.turns.splice(i,1);             // not a word of theirs was heard
       else { t.cut=true; if(said.length<t.text.length) t.text=said; }
       break;
     }
-    S.speaking=false; S.lastSpokeEnd=Date.now();
+    S.speaking=false;
+    if(wasAudible) S.lastSpokeEnd=Date.now();
     paintState(); renderCall();
+    armDeadAir();
     return true;
   }
   function quiet(){ return !S.speaking&&!queue.length&&!speakingChain; }
@@ -420,6 +521,40 @@ import * as phone from "./phone.js";
       if(S.phase!=="live"){ clearInterval(t); return; }
       if(quiet()||n>80){ clearInterval(t); fn(); }
     },200);
+    return t;
+  }
+
+  /* ================= call-ending events (hang-up, booked, transfer) ================= */
+  function queueEvent(ev){
+    cancelEvent();
+    S.hold=true; S.pendingEv=ev;
+    const tok=S.evSeq;
+    if(ev==="transferred"){ S.pendingQuiet=whenQuiet(()=>{ if(tok===S.evSeq) transfer(tok); }); return; }
+    S.outcome = ev==="rep-ended" ? "wrapped" : ev;
+    S.pendingQuiet=whenQuiet(()=>{ if(tok===S.evSeq) endCall(S.outcome); });
+  }
+  function cancelEvent(){
+    S.evSeq++;
+    clearInterval(S.pendingQuiet); S.pendingQuiet=null;
+    try{ S.xferCtl&&S.xferCtl.abort(); }catch(e){} S.xferCtl=null;
+    if(S.ringing&&S.phase==="live"&&S.turns.some(t=>t.side==="them")) S.ringing=false;
+    S.hold=false; S.pendingEv=null; S.outcome=null;
+  }
+
+  // gatekeeper put you through: a ring, then the decision maker picks up and speaks first
+  async function transfer(tok){
+    if(S.phase!=="live"||tok!==S.evSeq) return;
+    beat("On hold — transferring to "+S.scen.dm+"…");
+    S.ringing=true; paintState();
+    S.xferCtl=new AbortController();
+    await phone.ring(1,AbortSignal.any?AbortSignal.any([S.callCtl.signal,S.xferCtl.signal]):S.callCtl.signal);
+    if(S.phase!=="live"||tok!==S.evSeq) return;
+    S.ringing=false; S.xferCtl=null;
+    S.who="dm"; S.hold=false; S.pendingEv=null;
+    beat(S.scen.dm+" picks up.");
+    flushNotes();
+    S.turns.push({side:"note",text:"[You have just been transferred this call. You pick up the phone.]",shown:""});
+    askProspect(false);
   }
 
   /* ================= dead air ================= */
@@ -432,6 +567,7 @@ import * as phone from "./phone.js";
       if(S.phase!=="live"||S.busy||S.speaking||S.ringing||S.hold||S.tm||(S.heard+S.interim).trim()||$("#say").value.trim()) return;
       S.silences++;
       const secs=Math.round(ms/1000);
+      flushNotes();
       S.turns.push({side:"note",text:"[silence: the rep has said nothing for "+secs+" seconds]",shown:"Dead air — "+secs+"s"});
       renderCall();
       askProspect(false);
@@ -440,15 +576,19 @@ import * as phone from "./phone.js";
   function clearDeadAir(){ clearTimeout(S.deadAir); S.deadAir=null; }
 
   /* ================= the call ================= */
-  async function startCall(){
-    phone.unlock();
-    S.phase="live"; S.who=S.scen.open; S.step=S.scen.open==="dm"?2:1; S.reached=S.step;
+  function startCall(){
+    unlockAudio();
+    if(S.spec){ S.spec.release(false); S.spec=null; }
+    cancelEvent();
+    S.phase="live"; S.who=S.scen.open; S.step=S.scen.open==="dm"?2:1; S.reached=1;
     S.turns=[]; S.peeks=0; S.retries=0; S.outcome=null; S.teardown=null; S.silences=0; S.peekMood=false;
-    S.lastSpokeEnd=0; S.spokenNow=""; S.hold=false; S.pendingEv=null;
-    S.lastId="c"+Date.now().toString(36); S.callAt=""; S.peekStep=null; S.heard=""; S.interim=""; S.tm=null;
+    S.lastSpokeEnd=0; S.spokenNow=""; S.played=""; S.audible=false; S.pendingNotes=[];
+    S.reqSeq++; S.cutReq=-1; S.queuedAsk=false; S.busy=false;
+    S.lastId="c"+Date.now().toString(36); S.callAt=""; S.peekStep=null; S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null;
     S.callCtl=new AbortController();
     startClock(); renderKeys(); paintBoard(); renderCall(); renderRail();
     $("#fallback").hidden = srOK && S.mic!=="denied";
+    if(!$("#fallback").hidden) showFallback();
     startMic();
     beat("Dialing "+S.scen.firm+"…");
     askProspect(true);
@@ -462,15 +602,37 @@ import * as phone from "./phone.js";
 
   let mouthBox=null, mouthLine=null, vadBar=null;
 
+  function visible(t){ return t.side!=="director"&&!t.pending&&!(t.side==="note"&&!t.shown); }
   function turnNode(t){
     if(t.side==="beat") return el("div","beat"+(t.dir?" dir":""),t.text);
-    if(t.side==="note") return el("div","beat",t.shown||t.text);
+    if(t.side==="note") return el("div","beat",t.shown);
     const d=el("div","turn "+t.side+(t.flagged?" flagged":""));
     d.appendChild(el("span","cue",t.side==="rep"?"YOU":whoLabel(t.who)));
     const p=el("p","said"); p.textContent=t.text;
     if(t.cut) p.appendChild(el("span","cut"," ——"));
     d.appendChild(p);
     return d;
+  }
+
+  // script line + patience read-out, shown in the rail (or on the stage on phones)
+  function peekNodes(){
+    const out=[];
+    const peekStep=(S.peekStep&&S.peekStep.n===S.step)?S.peekStep:null;
+    if(peekStep) out.push(el("div","peek",peekStep.line));
+    if(S.peekMood){
+      const lt=[...S.turns].reverse().find(t=>t.side==="them"&&t.patience!=null);
+      const mm=el("div","meter"); const ml=el("div","lbl");
+      ml.appendChild(el("span","","Their patience"));
+      ml.appendChild(el("span","",lt?lt.patience+" / 10":"—"));
+      mm.appendChild(ml);
+      const tr=el("div","track"); const fl=el("div","fill");
+      fl.style.width=(lt?lt.patience*10:0)+"%";
+      if(lt&&lt.patience<=3) fl.style.background="var(--crit)"; else if(lt&&lt.patience<=6) fl.style.background="var(--warn)";
+      tr.appendChild(fl); mm.appendChild(tr);
+      if(lt&&lt.objection&&lt.objection!=="none") mm.appendChild(el("p","hint","Last objection: "+lt.objection.replace(/-/g," ")));
+      out.push(mm);
+    }
+    return out;
   }
 
   function renderCall(){
@@ -481,9 +643,10 @@ import * as phone from "./phone.js";
     slug.textContent="INT. "+S.scen.firm.toUpperCase()+" — OUTBOUND · RESIST "+S.diff;
     c.appendChild(slug);
 
-    S.turns.forEach((t)=>{ if(t.side!=="director"&&!t.pending) c.appendChild(turnNode(t)); });
+    S.turns.forEach((t)=>{ if(visible(t)) c.appendChild(turnNode(t)); });
 
     const m=el("div","mouth");
+    if(NARROW.matches){ const pk=peekNodes(); if(pk.length){ const box=el("div","stagepeek"); pk.forEach(n=>box.appendChild(n)); m.appendChild(box); } }
     mouthBox=el("div","mouthbox idle");
     mouthBox.appendChild(el("span","cue","YOU"));
     mouthLine=el("p","waiting","");
@@ -506,7 +669,7 @@ import * as phone from "./phone.js";
       mouthLine.textContent =
         S.ringing?"Ringing…"
         :S.speaking?"They’re talking — cut in whenever you like."
-        :S.busy?"…"
+        :S.busy&&!S.spec?"…"
         :S.mic==="live"?"Listening…"
         :"Type your line below.";
     }
@@ -523,21 +686,28 @@ import * as phone from "./phone.js";
   function sendLine(text,meta){
     text=String(text||"").trim();
     if(!text||S.phase!=="live") return;
+    const turn={side:"rep",text:text,meta:meta||{typed:true}};
     if(S.hold||S.ringing){                        // call is ending or being transferred
-      if(S.pendingEv==="transferred"){ S.turns.push({side:"rep",text:text,meta:meta||{typed:true}}); $("#say").value=""; renderCall(); }
+      if(S.pendingEv==="transferred"){ S.turns.push(turn); $("#say").value=""; renderCall(); }
       return;
     }
     cancelSpec(); clearDeadAir(); S.silences=0;
-    if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} gen++; S.busy=false; }
+    if(S.busy&&S.cutReq===S.reqSeq){              // you cut in while their reply was still arriving:
+      flushNotes(); S.turns.push(turn);           // let it finish (its tag may end the call), then answer
+      S.queuedAsk=true; $("#say").value=""; renderCall(); return;
+    }
+    if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} S.reqSeq++; S.busy=false; }
     cutThemOff();
-    S.turns.push({side:"rep",text:text,meta:meta||{typed:true}});
+    flushNotes();
+    S.turns.push(turn);
     $("#say").value=""; renderCall();
     askProspect(false);
   }
   function lastRepIndex(){
-    for(let i=S.turns.length-1;i>=0;i--) if(S.turns[i].side==="rep") return i;
+    for(let i=S.turns.length-1;i>=0;i--) if(S.turns[i].side==="rep"&&!S.turns[i].pending) return i;
     return -1;
   }
+  function flushNotes(){ if(S.pendingNotes.length){ S.turns.push(...S.pendingNotes); S.pendingNotes=[]; } }
 
   /* ================= prospect ================= */
   // what the server needs to rebuild the conversation
@@ -588,8 +758,11 @@ import * as phone from "./phone.js";
 
     const role = S.who==="dm" ? "dm" : "gk";
     const sayer = S.who;
-    S.ctl=new AbortController();
+    const myReq=++S.reqSeq;
+    const ctl=S.ctl=new AbortController();
     const myGen=gen;
+    const stale=()=>myReq!==S.reqSeq||S.phase!=="live";   // superseded: a newer request owns S.busy
+    const cut=()=>myGen!==gen;                              // you cut in: stop voicing, still read the tag
 
     // The reply is generated right away but may be held back: behind the ring on the
     // first turn, or until your end-of-turn pause is confirmed on a speculative turn.
@@ -598,8 +771,8 @@ import * as phone from "./phone.js";
     if(firstTurn){
       S.ringing=true; paintState();
       waits.push(phone.ring(1+(Math.random()<0.4?1:0),S.callCtl.signal).then(()=>{
-        S.ringing=false;
         if(S.phase!=="live") return;
+        S.ringing=false;
         beat(S.scen.open==="dm"?"Line picks up.":"Line picks up. Front desk.");
         paintState();
       }));
@@ -610,9 +783,9 @@ import * as phone from "./phone.js";
       gateP=Promise.all(waits).then(()=>{ open=true; if(lastWhole) feed(lastWhole); });
     }
 
-    let spokenUpTo=0, started=false, idx=-1, tagSeen=false, liveP=null, chunks=0;
+    let spokenUpTo=0, started=false, themTurn=null, tagSeen=false, liveP=null, chunks=0;
     const feed=(whole)=>{
-      if(myGen!==gen||S.phase!=="live") return;       // you cut in; stop feeding
+      if(stale()||cut()) return;
       const tagAt=whole.indexOf("[[");
       let speakable = tagAt>=0 ? whole.slice(0,tagAt) : whole;
       if(tagAt>=0) tagSeen=true;
@@ -625,10 +798,10 @@ import * as phone from "./phone.js";
       const m = soft ? /[.!?…,;:](\s|$)/g : /[.!?…](\s|$)/g;
       let mm, last=-1;
       while((mm=m.exec(rest))!==null){ if(!soft||mm.index>=10||/[.!?…]/.test(rest[mm.index])) last=mm.index+1; }
-      let cut = last>0 ? spokenUpTo+last : (tagSeen&&speakable.length>spokenUpTo ? speakable.length : -1);
-      if(cut>spokenUpTo){
-        const chunk=speakable.slice(spokenUpTo,cut).trim();
-        spokenUpTo=cut;
+      let cutAt = last>0 ? spokenUpTo+last : (tagSeen&&speakable.length>spokenUpTo ? speakable.length : -1);
+      if(cutAt>spokenUpTo){
+        const chunk=speakable.slice(spokenUpTo,cutAt).trim();
+        spokenUpTo=cutAt;
         if(chunk){
           if(!started){ started=true; beginSpeaking(); }
           chunks++;
@@ -638,78 +811,77 @@ import * as phone from "./phone.js";
 
       const shown=speakable.trim();
       if(!shown) return;
-      if(idx<0){
-        S.turns.push({side:"them",text:shown,who:sayer});
-        idx=S.turns.length-1;
+      if(!themTurn){
+        themTurn={side:"them",text:shown,who:sayer};
+        S.turns.push(themTurn);
         renderCall();
         const all=$("#stage").querySelectorAll(".turn.them .said");
         liveP=all[all.length-1]||null;
       }else{
-        S.turns[idx].text=shown;
-        if(liveP) liveP.textContent=shown; else renderCall();
+        themTurn.text=shown;
+        if(liveP&&liveP.isConnected) liveP.textContent=shown; else renderCall();
       }
     };
 
+    const followUp=()=>{ if(S.queuedAsk&&S.phase==="live"&&!S.hold){ S.queuedAsk=false; askProspect(false); } else S.queuedAsk=false; };
+
     try{
       const raw=await streamProspect({scenarioId:S.scen.id,diff:S.diff,who:S.who,
-        seed:S.lastId,turns:firstTurn?[]:transcript()},S.ctl.signal,(whole)=>{ lastWhole=whole; if(open) feed(whole); });
+        seed:S.lastId,turns:firstTurn?[]:transcript()},ctl.signal,(whole)=>{ lastWhole=whole; if(open) feed(whole); });
       if(gateP) await gateP;
-      if(myGen===gen) S.busy=false;
-      if(myGen!==gen||S.phase!=="live"){ paintState(); return; }   // you talked over the whole thing
+      if(stale()) return;
+      S.busy=false;
+      const wasCut=cut();
       const tag=TAG.exec(raw);
       const spoken=raw.replace(/\[\[[\s\S]*$/,"").trim();
-      if(!spoken&&!(tag&&tag[3].toLowerCase()==="hangup")){ beat("Line noise. Press R and say that again.","dir"); paintState(); armDeadAir(); return; }
-      tagSeen=true; feed(raw.includes("[[")?raw:raw+"[[");      // voice whatever's still unsaid
-      if(spoken){
-        if(idx<0){ S.turns.push({side:"them",text:spoken,who:sayer}); idx=S.turns.length-1; }
-        else S.turns[idx].text=spoken;
+      if(!wasCut){
+        if(!spoken&&!(tag&&tag[3].toLowerCase()==="hangup")){
+          S.lastSpokeEnd=0; flushNotes();
+          beat(S.turns.some(t=>t.side==="them")?"Line noise. Press R and say that again.":"Line noise. Press R to get them back.","dir");
+          paintState(); armDeadAir(); return;
+        }
+        tagSeen=true; feed(raw.includes("[[")?raw:raw+"[[");      // voice whatever's still unsaid
+        if(spoken){
+          if(!themTurn){ themTurn={side:"them",text:spoken,who:sayer}; S.turns.push(themTurn); }
+          else themTurn.text=spoken;
+        }
       }
 
       const who = tag?tag[1].toLowerCase():S.who;
-      const stp = tag?parseInt(tag[2],10):S.step;
+      const stp = Math.min(5,Math.max(1,tag?parseInt(tag[2],10):S.step));
       let ev    = tag?tag[3].toLowerCase():"none";
       const pat = tag&&tag[4]!=null?Math.min(10,Math.max(0,parseInt(tag[4],10))):null;
       const obj = tag?slug(tag[5]):null;
       if(ev==="booked"&&sayer!=="dm") ev="none";              // only the decision maker can book
-      if(idx>=0&&tag){ Object.assign(S.turns[idx],{patience:pat,objection:obj,tag:{who,step:Math.min(5,Math.max(1,stp)),ev}}); }
       if(pat===0&&ev==="none") ev="hangup";                   // out of patience means gone
-      if(ev!=="none"){ S.hold=true; S.pendingEv=ev; }
-      S.who=who; S.step=Math.min(5,Math.max(1,stp)); S.reached=Math.max(S.reached,S.step);
+      if(ev==="hangup"&&obj==="rep-ended") ev="rep-ended";     // you wrapped it up; not an objection
+      const keep=themTurn&&S.turns.includes(themTurn);
+      if(keep&&tag) Object.assign(themTurn,{patience:pat,objection:ev==="rep-ended"?null:obj,
+        tag:{who,step:stp,ev:ev==="rep-ended"?"hangup":ev}});
+      S.who=who; S.step=stp; S.reached=Math.max(S.reached,S.step);
+      flushNotes();
       renderCall(); paintBoard(); renderRail();
 
-      if(ev==="transferred"){ transfer(); }
-      else if(ev==="booked"){ S.outcome="booked"; whenQuiet(()=>endCall("booked")); }
-      else if(ev==="hangup"&&obj==="rep-ended"){ S.outcome="wrapped"; whenQuiet(()=>endCall("wrapped")); }
-      else if(ev==="hangup"){ S.outcome="hangup"; whenQuiet(()=>endCall("hangup")); }
+      if(ev!=="none"){ S.queuedAsk=false; queueEvent(ev); }
+      else if(wasCut) followUp();                             // your line (spoken over them) gets its answer now
       if(quiet()) finishSpeaking();
       paintState();
-      if(ev==="none"&&quiet()) armDeadAir();
+      if(ev==="none"&&quiet()&&!S.busy) armDeadAir();
     }catch(e){
-      if(gateP&&!(e&&e.name==="AbortError")) await gateP;
-      if(myGen===gen) S.busy=false;
+      const aborted=(e&&e.name==="AbortError")||(e&&e.code==="cancelled");
+      if(gateP&&!aborted) await gateP;
+      if(stale()){ return; }
+      S.busy=false;
       paintState();
-      if((e&&e.name==="AbortError")||(e&&e.code==="cancelled")||myGen!==gen||S.phase!=="live"){ renderCall(); return; }
+      if(aborted){ renderCall(); return; }
+      if(cut()&&S.queuedAsk){ followUp(); return; }
+      S.lastSpokeEnd=0; flushNotes();
       const msg = e&&e.code==="not_granted" ? "The server has no working Anthropic API key — the prospect can’t speak."
         : e&&e.code==="rate_limited" ? "Too many calls too fast. Give it a minute."
-        : "The line dropped. Press R to run that line again.";
-      beat(msg,"dir"); renderCall();
+        : S.turns.some(t=>t.side==="them") ? "The line dropped. Press R to run that line again."
+        : "The line dropped. Press R to get them back.";
+      beat(msg,"dir"); renderCall(); armDeadAir();
     }
-  }
-
-  // gatekeeper put you through: a ring, then the decision maker picks up and speaks first
-  function transfer(){
-    whenQuiet(async()=>{
-      if(S.phase!=="live") return;
-      beat("On hold — transferring to "+S.scen.dm+"…");
-      S.ringing=true; paintState();
-      await phone.ring(1,S.callCtl.signal);
-      S.ringing=false;
-      if(S.phase!=="live") return;
-      S.who="dm"; S.hold=false; S.pendingEv=null;
-      beat(S.scen.dm+" picks up.");
-      S.turns.push({side:"note",text:"[You have just been transferred this call. You pick up the phone.]",shown:""});
-      askProspect(false);
-    });
   }
 
   /* ================= silent channel ================= */
@@ -729,6 +901,7 @@ import * as phone from "./phone.js";
     KEYS.forEach((it)=>{
       const b=el("button","key"+(it.danger?" danger":"")); b.type="button";
       b.appendChild(el("kbd","",it.k)); b.appendChild(el("span","",it.label));
+      b.onmousedown=(ev)=>ev.preventDefault();          // never keep focus: the next keystroke is yours
       b.onclick=(ev)=>{ ev.preventDefault(); it.fn(); };
       w.appendChild(b);
     });
@@ -748,30 +921,54 @@ import * as phone from "./phone.js";
     const inField=e.target&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName);
     if(inField){
       if(e.key==="Enter"){ e.preventDefault(); sendLine($("#say").value); return; }
-      if(!e.shiftKey){ if(S.deadAir) armDeadAir(); return; }   // typing wins (and buys time); Shift+key still signals
+      if(e.key==="Escape"){ e.target.blur(); flash("Shortcut keys on — click the box to type."); return; }
+      if(S.deadAir) armDeadAir();                        // typing buys time
+      return;                                            // every other key is typing
     }
+    if(e.target&&e.target.tagName==="BUTTON"&&(e.key===" "||e.key==="Enter")) return;
     const k=e.key.toUpperCase();
     const hit=KEYS.find(it=>it.k===k||(it.k==="/"&&(e.key==="/"||e.key==="?")));
     if(hit){ e.preventDefault(); hit.fn(); }
   });
 
+  function restoreSpeaker(){
+    const last=[...S.turns].reverse().find(t=>t.side==="them"&&t.tag);
+    if(last){ S.who=last.tag.ev==="transferred"?"gatekeeper":last.tag.who; S.step=last.tag.step; }
+    else { S.who=S.scen.open; S.step=S.scen.open==="dm"?2:1; }
+    if(!S.scen.gk) S.who="dm";
+  }
+
   function retryLine(){
-    cancelSpec();
-    if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} S.busy=false; }
-    cutThemOff();
+    if(S.tm||(S.heard+S.interim).trim()){          // still mid-sentence: throw away what you've said
+      consumeUtterance(); cancelSpec(); updateMouth(); paintState();
+      flash("Say it again."); armDeadAir(); return;
+    }
     const i=lastRepIndex();
-    if(i<0){ flash("Nothing to retry yet."); return; }
+    if(i<0){
+      if(!S.turns.some(t=>t.side==="them")&&!S.busy&&!S.ringing){   // the pickup never came through
+        S.lastSpokeEnd=0; askProspect(false); flash("Getting them back on the line."); return;
+      }
+      flash("Nothing to retry yet."); return;
+    }
+    cancelSpec(); cancelEvent();
+    if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} S.reqSeq++; S.busy=false; }
+    S.queuedAsk=false;
+    const hadDirector=S.turns.slice(i).filter(t=>t.side==="director");
+    hushAudio(); S.speaking=false;
     const said=S.turns[i].text;
-    S.turns=S.turns.slice(0,i); S.retries++; S.hold=false; S.pendingEv=null;
+    S.turns=S.turns.slice(0,i).concat(hadDirector); S.retries++;
+    restoreSpeaker();
+    S.lastSpokeEnd=0;                              // don't time your retake from the deleted exchange
     beat("Take two.","dir");
     if(!$("#fallback").hidden){ $("#say").value=said; }
     flash("Say it again.");
-    paintState(); renderCall(); renderRail(); armDeadAir();
+    paintBoard(); paintState(); renderCall(); renderRail(); armDeadAir();
   }
   function nudge(d){
     const was=S.diff; S.diff=Math.min(5,Math.max(1,S.diff+d));
     if(S.diff===was){ flash(d>0?"Already brutal.":"Already warm."); return; }
-    S.turns.push({side:"director",text:"[DIRECTOR: resistance is now "+S.diff+" of 5. Adjust from your next line on.]"});
+    const note={side:"director",text:"[DIRECTOR: resistance goes from "+was+" to "+S.diff+" of 5 ("+(d>0?"tougher":"easier")+"). Adjust from your next line on.]"};
+    if(S.busy) S.pendingNotes.push(note); else S.turns.push(note);   // never before a reply that didn't see it
     flash("Resistance "+S.diff+".");
     paintBoard(); renderCall();
   }
@@ -781,32 +978,39 @@ import * as phone from "./phone.js";
     flash(S.turns[i].flagged?"Flagged for the teardown.":"Unflagged.");
   }
   function toggleMic(){
-    if(S.mic==="live"){ stopMic(); showFallback(); flash("Mic muted."); }
+    if(S.mic==="live"){
+      if(S.tm||(S.heard+S.interim).trim()) endOfTurn();   // what you already said still counts
+      stopMic(); showFallback(); flash("Mic muted.");
+    }
     else if(srOK){ startMic(); flash("Mic live."); }
     else flash("No mic in this browser.");
     armDeadAir();
   }
   function peek(){
-    S.peeks++; S.peekStep=STEPS[S.step-1]; renderRail();
+    S.peeks++; S.peekStep=STEPS[S.step-1]; renderRail(); if(NARROW.matches) renderCall();
     flash("Peeked — "+S.peeks+" so far.");
   }
   function peekMood(){
-    S.peeks++; S.peekMood=true; renderRail();
+    S.peeks++; S.peekMood=true; renderRail(); if(NARROW.matches) renderCall();
     flash("Reading the room — counts as a peek.");
   }
 
-  $("#sendBtn").onclick=()=>sendLine($("#say").value);
+  $("#sendBtn").onmousedown=(e)=>e.preventDefault();
+  $("#sendBtn").onclick=()=>{ sendLine($("#say").value); $("#say").focus(); };
   $("#say").addEventListener("input",()=>{ if(S.deadAir) armDeadAir(); });
 
   /* ================= end ================= */
   function endCall(how){
     if(S.phase!=="live") return;
+    const outcome=S.outcome||how;
     try{ S.ctl&&S.ctl.abort(); }catch(e){}
     try{ S.callCtl&&S.callCtl.abort(); }catch(e){}
+    cancelSpec(); cancelEvent();
+    S.reqSeq++; S.queuedAsk=false; S.pendingNotes=[];
     hushAudio(); S.speaking=false; S.ringing=false;
     clearDeadAir();
     stopMic(); clearInterval(S.tick); S.tick=null;
-    S.phase="ended"; S.outcome=S.outcome||how; S.busy=false;
+    S.phase="ended"; S.outcome=outcome; S.busy=false;
     if(S.outcome==="hangup") phone.disconnected(); else phone.hangup();
     beat(S.outcome==="booked"?"Meeting booked. Call over.":S.outcome==="hangup"?"They hung up.":S.outcome==="wrapped"?"Call wrapped up.":"You hung up.");
     paintBoard(); paintState(); renderEnd(); renderRail(); logCall(null);
@@ -828,7 +1032,7 @@ import * as phone from "./phone.js";
     grade.onclick=()=>getTeardown(grade);
     const again=el("button","ghostbtn","Dial again"); again.type="button";
     again.onclick=()=>{ S.phase="setup"; $("#clock").textContent="0:00"; renderSetup(); renderRail(); };
-    if(S.teardown) grade.remove(); else acts.appendChild(grade);
+    if(!S.teardown) acts.appendChild(grade);
     acts.appendChild(again); s.appendChild(acts);
 
     const hold=el("div"); hold.id="tdown"; s.appendChild(hold);
@@ -857,7 +1061,7 @@ import * as phone from "./phone.js";
     t.appendChild(el("p","eyebrow","The call"));
     const sc=el("div","call");
     S.turns.forEach((x)=>{
-      if(x.side==="director"||(x.side==="note"&&!x.shown)) return;
+      if(!visible(x)) return;
       const n=turnNode(x);
       if(x.side==="rep"&&x.meta&&!x.meta.typed){
         const m=x.meta, bits=[];
@@ -876,17 +1080,23 @@ import * as phone from "./phone.js";
 
   async function getTeardown(btn){
     btn.disabled=true; btn.textContent="Grading…";
+    const id=S.lastId, rec=logRecord(null);         // this call, even if you've moved on by the time it lands
     try{
       const r=await fetch("api/grade",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({scenarioId:S.scen.id,diff:S.diff,outcome:S.outcome||"hungup",
           reached:S.reached,turns:transcript()})});
       const j=await r.json().catch(()=>({}));
       if(!r.ok) throw Object.assign(new Error(j.message||"HTTP "+r.status),{code:j.code});
-      S.teardown=j; paintTeardown(j,$("#tdown")); logCall(j); btn.remove();
+      saveLog({...rec,grade:avgGrade(j),fix:j.fix?String(j.fix):""});
+      const hold=$("#tdown");
+      if(S.lastId!==id||S.phase!=="ended"||!hold) return;
+      S.teardown=j; paintTeardown(j,hold); btn.remove();
     }catch(e){
+      const hold=$("#tdown");
+      if(S.lastId!==id||S.phase!=="ended"||!hold) return;
       btn.disabled=false; btn.textContent="Grade this call";
-      $("#tdown").textContent="";
-      $("#tdown").appendChild(el("div","warnbox", e&&e.code==="not_granted"
+      hold.textContent="";
+      hold.appendChild(el("div","warnbox", e&&e.code==="not_granted"
         ? "The server has no working Anthropic API key, so it can’t grade the call."
         : e&&e.code==="rate_limited" ? "Too many requests. Give it a minute and try again."
         : "Grading didn’t come back. Try once more."));
@@ -932,7 +1142,7 @@ import * as phone from "./phone.js";
       const b=el("div","good"); b.appendChild(el("span","k","Say this"));
       b.appendChild(el("p","said",String(r.worst.instead||"")));
       const hear=el("button","ghostbtn","Hear it"); hear.type="button";
-      hear.onclick=()=>{ phone.unlock(); speakOnce(String(r.worst.instead||""),"rep","m"); };
+      hear.onclick=()=>{ unlockAudio(); speakOnce(String(r.worst.instead||""),"rep","m"); };
       if(voiceOK()) b.appendChild(hear);
       sw.appendChild(a); sw.appendChild(b); g.appendChild(sw);
     }
@@ -946,17 +1156,20 @@ import * as phone from "./phone.js";
     r.steps.forEach(s=>{const k=String(s.grade||"").toUpperCase().slice(0,1); if(k in map){sum+=map[k];n++;}});
     return n?["F","D","C","B","A"][Math.round(sum/n)]:"";
   }
-  function logCall(r){
+  function logRecord(r){
     if(!S.callAt) S.callAt=new Date().toISOString();
-    const rec={id:S.lastId,at:S.callAt,firm:S.scen.firm,diff:S.diff,reached:S.reached,
+    return {id:S.lastId,at:S.callAt,firm:S.scen.firm,diff:S.diff,reached:S.reached,
       outcome:S.outcome||"hungup",seconds:elapsed(),peeks:S.peeks,retries:S.retries,
       grade:avgGrade(r)||"",fix:r&&r.fix?String(r.fix):""};
-    const i=S.calls.findIndex(c=>c.id===S.lastId);
+  }
+  function saveLog(rec){
+    const i=S.calls.findIndex(c=>c.id===rec.id);
     if(i>=0) S.calls[i]=rec; else S.calls.unshift(rec);
     renderRail();
-    fetch("api/calls/"+encodeURIComponent(S.lastId),{method:"PUT",headers:{"Content-Type":"application/json"},
+    fetch("api/calls/"+encodeURIComponent(rec.id),{method:"PUT",headers:{"Content-Type":"application/json"},
       body:JSON.stringify(rec)}).catch(()=>{});
   }
+  function logCall(r){ saveLog(logRecord(r)); }
   function dayOf(iso){ const d=new Date(iso); return isNaN(d)?"":d.toLocaleDateString("en-CA"); }
   function today(){ return dayOf(new Date().toISOString()); }
   function stats(){
@@ -968,7 +1181,6 @@ import * as phone from "./phone.js";
 
   function renderRail(){
     const w=$("#rail"); w.textContent="";
-    const peekStep=(S.peekStep&&S.peekStep.n===S.step)?S.peekStep:null;
 
     const s1=el("section");
     s1.appendChild(el("p","rtitle","Today"));
@@ -1003,20 +1215,7 @@ import * as phone from "./phone.js";
         const d=el("div","chk"); d.appendChild(el("i","","—")); d.appendChild(el("span","",r)); cl.appendChild(d);
       });
       s2.appendChild(cl);
-      if(peekStep) s2.appendChild(el("div","peek",peekStep.line));
-      if(S.peekMood){
-        const lt=[...S.turns].reverse().find(t=>t.side==="them"&&t.patience!=null);
-        const mm=el("div","meter"); const ml=el("div","lbl");
-        ml.appendChild(el("span","","Their patience"));
-        ml.appendChild(el("span","",lt?lt.patience+" / 10":"—"));
-        mm.appendChild(ml);
-        const tr=el("div","track"); const fl=el("div","fill");
-        fl.style.width=(lt?lt.patience*10:0)+"%";
-        if(lt&&lt.patience<=3) fl.style.background="var(--crit)"; else if(lt&&lt.patience<=6) fl.style.background="var(--warn)";
-        tr.appendChild(fl); mm.appendChild(tr);
-        if(lt&&lt.objection&&lt.objection!=="none") mm.appendChild(el("p","hint","Last objection: "+lt.objection.replace(/-/g," ")));
-        s2.appendChild(mm);
-      }
+      peekNodes().forEach(n=>s2.appendChild(n));
       w.appendChild(s2);
     }
 

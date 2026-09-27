@@ -79,18 +79,51 @@ export function disconnected(){
 // You hung up: just the click.
 export function hangup(){ if(unlock()) click(ctx.currentTime + 0.01, 0.3); }
 
-// Play an audio URL through the handset filter. Resolves when it ends or is stopped.
-export function playThroughLine(url, signal){
+// One shared <audio> element, unlocked during the Dial tap. Safari and iOS only let
+// an element play later (after network waits) if it was started inside a user gesture.
+let player = null, silentUrl = null;
+function silentWav(){
+  const n = 800, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+  const w = (o, s) => { for(let i=0;i<s.length;i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0,"RIFF"); v.setUint32(4, 36 + n*2, true); w(8,"WAVE"); w(12,"fmt "); v.setUint32(16,16,true);
+  v.setUint16(20,1,true); v.setUint16(22,1,true); v.setUint32(24,8000,true); v.setUint32(28,16000,true);
+  v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,"data"); v.setUint32(40, n*2, true);
+  return URL.createObjectURL(new Blob([b], { type:"audio/wav" }));
+}
+export function primeAudio(){
+  unlock();
+  try{
+    if(!player){
+      player = new Audio(); player.preload = "auto";
+      if(ctx && line){ try{ ctx.createMediaElementSource(player).connect(line); }catch(e){} }
+    }
+    player.src = silentUrl ??= silentWav();
+    player.play().catch(()=>{});
+  }catch(e){ player = null; }
+}
+
+// Play an audio URL through the handset filter. Resolves true when it played to
+// the end (or was deliberately stopped), false if it couldn't play at all.
+// onStart fires when sound actually starts.
+export function playThroughLine(url, signal, onStart){
   return new Promise((resolve)=>{
-    const a = new Audio();
-    a.src = url; a.preload = "auto";
-    let done = false;
-    const finish = () => { if(done) return; done = true; try{ a.pause(); }catch(e){} resolve(); };
-    a.onended = finish; a.onerror = finish;
-    signal?.addEventListener("abort", finish, { once:true });
-    try{
-      if(unlock() && line){ const src = ctx.createMediaElementSource(a); src.connect(line); }
-    }catch(e){}
-    a.play().catch(finish);
+    const a = player || new Audio();
+    let done = false, began = false;
+    const finish = (ok) => {
+      if(done) return; done = true;
+      a.onended = a.onerror = a.onplaying = null;
+      try{ a.pause(); }catch(e){}
+      resolve(ok);
+    };
+    a.onplaying = () => { if(!began){ began = true; onStart && onStart(); } };
+    a.onended = () => finish(true);
+    a.onerror = () => finish(began);
+    if(signal?.aborted) return finish(true);
+    signal?.addEventListener("abort", () => finish(true), { once:true });
+    if(a !== player){
+      try{ if(unlock() && line){ ctx.createMediaElementSource(a).connect(line); } }catch(e){}
+    }
+    a.src = url;
+    a.play().catch(() => finish(false));
   });
 }
