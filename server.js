@@ -1,5 +1,7 @@
-import { app, PORT, HOST, LOOPBACK, HAS_BRAIN, ELEVEN_KEY, APP_PASSWORD } from "./src/app.js";
+import { app, PORT, HOST, LOOPBACK, HAS_BRAIN, ELEVEN_KEY, APP_PASSWORD, ON_VERCEL } from "./src/app.js";
 
+// On Vercel the platform runs the exported app; locally we listen ourselves.
+if (!ON_VERCEL) {
 const server = app.listen(PORT, HOST, (err) => {
   if (err) {
     console.error(`Can't listen on ${HOST}:${PORT}: ${err.message}`);
@@ -15,3 +17,6 @@ server.on("error", (err) => {
   console.error(`Server error: ${err.message}`);
   process.exit(1);
 });
+}
+
+export default app;

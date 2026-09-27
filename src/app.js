@@ -14,6 +14,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 try { process.loadEnvFile(path.join(ROOT, ".env")); } catch { /* no .env: use the real environment */ }
 
 export const PORT = Number(process.env.PORT) || 3000;
+export const ON_VERCEL = !!process.env.VERCEL;
 export const APP_PASSWORD = process.env.APP_PASSWORD || "";
 // Without a password, stay on this machine unless HOST says otherwise.
 export const HOST = process.env.HOST || (APP_PASSWORD ? "0.0.0.0" : "127.0.0.1");
@@ -21,7 +22,8 @@ export const LOOPBACK = /^(127\.|localhost$|::1$|\[::1\]$)/i.test(HOST);
 const PROSPECT_MODEL = process.env.PROSPECT_MODEL || "claude-opus-5";
 const GRADER_MODEL = process.env.GRADER_MODEL || "claude-opus-5";
 const PROSPECT_EFFORT = process.env.PROSPECT_EFFORT || "low";   // spoken replies: speed over depth
-const DATA_FILE = path.resolve(ROOT, process.env.DATA_FILE || "data/calls.json");
+// Vercel's filesystem is read-only except /tmp (so the hosted call log is per-instance and temporary)
+const DATA_FILE = path.resolve(ROOT, process.env.DATA_FILE || (ON_VERCEL ? "/tmp/calls.json" : "data/calls.json"));
 export const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVEN_MODEL = process.env.ELEVENLABS_MODEL || "eleven_flash_v2_5";
 const ELEVEN_BASE = (process.env.ELEVENLABS_BASE_URL || "https://api.elevenlabs.io").replace(/\/$/, "");
@@ -36,7 +38,7 @@ const client = new Anthropic();
 export const app = express();
 app.disable("x-powered-by");
 // Behind a local HTTPS proxy, rate-limit by the real client address (never trust remote X-Forwarded-For).
-app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
+app.set("trust proxy", process.env.TRUST_PROXY || (ON_VERCEL ? true : "loopback"));
 
 // Optional shared password (HTTP Basic auth) so a deployed copy isn't an open door to your API keys.
 if (APP_PASSWORD) {
@@ -47,7 +49,7 @@ if (APP_PASSWORD) {
     if (a.length === b.length && timingSafeEqual(a, b)) return next();
     res.set("WWW-Authenticate", 'Basic realm="The Dial Room"').status(401).send("Password required.");
   });
-} else if (LOOPBACK) {
+} else if (LOOPBACK && !ON_VERCEL) {
   // Local-only mode: refuse other Host names so a web page can't reach the API via DNS rebinding.
   app.use((req, res, next) => {
     const host = String(req.headers.host || "").replace(/:\d+$/, "").toLowerCase();
