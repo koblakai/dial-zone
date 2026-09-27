@@ -83,7 +83,7 @@ import * as phone from "./phone.js";
       $("#clock").textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
     },250);
   }
-  function elapsed(){ return S.startedAt?Math.floor((Date.now()-S.startedAt)/1000):0; }
+  function elapsed(){ return S.startedAt?Math.floor(((S.endedAt||Date.now())-S.startedAt)/1000):0; }
   function fmt(s){ return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
 
   function speakerName(){ return S.who==="dm"?first(S.scen.dm):(S.scen.gk||"They"); }
@@ -140,13 +140,14 @@ import * as phone from "./phone.js";
       unlockAudio();
       S.lineCheck={busy:true,text:"Asking for the mic…",dot:"wait"}; renderSetup();
       const ok=await askMic();
+      if(S.phase!=="setup"){ S.lineCheck={busy:false,text:"",dot:""}; return; }
       S.lineCheck={busy:true,
         text: ok===true?"Mic ready":ok===null?"The browser will ask for the mic when you dial":S.mic==="denied"?"Mic blocked — allow it in the address bar":"Mic unavailable",
         dot: ok===true?"ok":ok===null?"wait":"bad"};
       renderSetup();
       const sc=S.scen, role=sc.gk?"gk":"dm";
-      await speakOnce(sc.firm.replace("&","and")+", this is "+(sc.gk||first(sc.dm))+".",role);
-      S.lineCheck={...S.lineCheck,busy:false}; renderSetup();
+      try{ await speakOnce(sc.firm.replace("&","and")+", this is "+(sc.gk||first(sc.dm))+".",role); }
+      finally{ S.lineCheck={...S.lineCheck,busy:false}; renderSetup(); }
     };
     mc.appendChild(test);
     box.appendChild(mc);
@@ -204,8 +205,16 @@ import * as phone from "./phone.js";
     }
   }
 
-  // Result indices restart with every recognition session.
-  function newSession(){ S.sr={len:0,skip:0,openIdx:-1,openWords:0,lastInterimIdx:-1,lastInterimText:""}; }
+  // Result indices restart with every recognition session. `skip` marks results already
+  // used; `seen` records when each result first appeared (for echo timing).
+  function newSession(){ S.sr={len:0,skip:0,seen:[],dirty:false}; }
+  // Throw away whatever the recognizer is still holding (unfinished words we've already
+  // used, or talk during a ring): abort, and onend starts a fresh session.
+  function freshSession(){
+    if(!rec||S.mic!=="live") return;
+    S.sr.skip=Infinity;                               // ignore anything the old session still reports
+    try{ rec.abort(); }catch(e){}
+  }
 
   function startMic(){
     if(!srOK){ S.mic="unsupported"; showFallback(); paintState(); return; }
@@ -222,12 +231,14 @@ import * as phone from "./phone.js";
       };
       rec.onend=()=>{
         if(S.phase!=="live"||S.mic!=="live"||restarting) return;
+        // a session that ended mid-word (error, timeout) keeps what it had heard
+        if(S.interim.trim()){ S.heardSegs.push(S.interim.trim()); S.heard=S.heardSegs.join(" "); S.interim=""; }
         restarting=true;
         setTimeout(()=>{
           restarting=false;
           if(S.phase!=="live"||S.mic!=="live"||!rec) return;
           try{ newSession(); rec.start(); }catch(e){ srFailure(); }
-        },120);
+        },60);
       };
       newSession(); rec.start(); S.mic="live"; paintState();
     }catch(e){ micFailed("failed"); }
@@ -258,19 +269,23 @@ import * as phone from "./phone.js";
     if(S.mic==="live") S.mic="idle";
     paintState();
   }
-  function showFallback(){
+  function showFallback(focus=true){
     const f=$("#fallback"); if(!f) return;
     f.hidden=false;
-    if(S.phase==="live") setTimeout(()=>{ try{ $("#say").focus(); }catch(e){} },0);
+    if(focus&&S.phase==="live") setTimeout(()=>{ try{ $("#say").focus(); }catch(e){} },0);
   }
 
   /* --- echo rejection: is what we just heard actually the prospect's own voice? --- */
   function norm(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9' ]/g," ").replace(/\s+/g," ").trim(); }
-  function isEcho(text){
-    if(!S.audible && Date.now()-S.lastSpokeEnd > ECHO_TAIL_MS) return false;
+  const STOP=new Set("the and you your for this that with are was our not but what who how can has have just its it's i'm you're we're they're okay yeah yes sure well about from them they she her his him".split(" "));
+  function isEcho(text,seenAt){
+    if(!S.audible){
+      if(Date.now()-S.lastSpokeEnd > ECHO_TAIL_MS) return false;
+      if(seenAt!=null && seenAt-S.lastSpokeEnd > SR_LAG_MS+200) return false;   // started after they stopped: that's you
+    }
     const heard=norm(text), src=new Set(norm(S.spokenNow).split(" "));
     if(!heard||src.size<=1) return false;
-    const hw=heard.split(" ").filter(w=>w.length>2);
+    const hw=heard.split(" ").filter(w=>w.length>2&&!STOP.has(w));
     if(!hw.length) return S.audible;                  // filler while they talk: drop it
     let hit=0; hw.forEach(w=>{ if(src.has(w)) hit++; });
     return (hit/hw.length) >= 0.6;                     // mostly their words coming back
@@ -295,29 +310,23 @@ import * as phone from "./phone.js";
     };
   }
 
-  const dropWords=(t,n)=>n>0?String(t).trim().split(/\s+/).slice(n).join(" "):String(t);
-
   function onHeard(e){
-    if(S.phase!=="live"||S.ringing||!S.sr) return;
-    const sr=S.sr;
+    if(S.phase!=="live"||!S.sr) return;
+    const sr=S.sr, now=Date.now();
+    if(S.ringing){ sr.dirty=true; return; }          // talking over the ring doesn't count; dropped when it ends
     sr.len=e.results.length;
     const finals=[]; let inter="";
     for(let i=e.resultIndex;i<e.results.length;i++){
-      if(i<sr.skip&&i!==sr.openIdx) continue;          // already sent as part of an earlier turn
-      const r=e.results[i];
-      let t=r[0].transcript;
-      if(i===sr.openIdx){                              // was mid-flight when your last turn ended
-        t=dropWords(t,sr.openWords);
-        if(r.isFinal) sr.openIdx=-1;
-      }
+      if(i<sr.skip) continue;                          // already used in an earlier turn
+      const r=e.results[i], t=r[0].transcript;
+      if(sr.seen[i]==null) sr.seen[i]=now;
+      if(isEcho(t,sr.seen[i])) continue;               // their own voice coming back through the mic
       if(r.isFinal){ if(t.trim()) finals.push(t.trim()); }
-      else { inter+=" "+t; sr.lastInterimIdx=i; sr.lastInterimText=r[0].transcript; }
+      else inter+=" "+t;
     }
     inter=inter.trim();
     const all=(finals.join(" ")+" "+inter).trim();
     if(!all) return;
-
-    if(isEcho(all)) return;                            // their voice in our mic — ignore
     S.srFails=[];
 
     const wasTalking=S.audible, wasQueued=S.speaking;
@@ -326,7 +335,6 @@ import * as phone from "./phone.js";
       cutThemOff();
     }
 
-    const now=Date.now();
     if(!S.tm){                                         // first words of a new turn
       S.tm={firstAt:now,lastAt:now,pauses:0,barged:wasTalking,
         startedAfterMs:(S.lastSpokeEnd&&!S.busy&&!wasQueued)?Math.max(0,now-SR_LAG_MS-S.lastSpokeEnd):null};
@@ -358,12 +366,10 @@ import * as phone from "./phone.js";
   // so a late final for the same words isn't heard twice.
   function consumeUtterance(){
     const text=(S.heard+" "+S.interim).trim(), tm=S.tm, sr=S.sr;
-    if(sr){
-      sr.skip=sr.len;
-      if(S.interim&&sr.lastInterimIdx>=0){ sr.openIdx=sr.lastInterimIdx; sr.openWords=sr.lastInterimText.trim().split(/\s+/).filter(Boolean).length; }
-      else sr.openIdx=-1;
-    }
+    const unfinished=!!S.interim;
+    if(sr) sr.skip=sr.len;
     S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null;
+    if(unfinished) freshSession();                   // the recognizer would re-send those words when it finalizes
     clearTimeout(S.vadTimer); clearTimeout(specTimer); specTimer=null;
     return {text,tm};
   }
@@ -424,7 +430,8 @@ import * as phone from "./phone.js";
   }
   function sexOf(role){ return role==="dm"?(S.scen.dmVoice||"f"):role==="rep"?"m":(S.scen.gkVoice||"f"); }
   function fetchVoice(text,role,previous,signal){
-    return fetch("api/tts",{method:"POST",headers:{"Content-Type":"application/json"},signal,
+    const sig = AbortSignal.timeout&&AbortSignal.any ? AbortSignal.any([signal||new AbortController().signal,AbortSignal.timeout(5000)]) : signal;
+    return fetch("api/tts",{method:"POST",headers:{"Content-Type":"application/json"},signal:sig,
       body:JSON.stringify({scenarioId:S.scen.id,role,text,previous})})
       .then(r=>{ if(!r.ok) throw new Error("tts "+r.status); return r.blob(); })
       .then(b=>URL.createObjectURL(b));
@@ -450,7 +457,7 @@ import * as phone from "./phone.js";
     S.spokenNow += " "+chunk;
     if(!S.speaking){ S.speaking=true; paintState(); }
     const item={t:chunk,role,g:myGen};
-    if(premium()) item.url=fetchVoice(chunk,role,previous,audioCtl.signal).catch(()=>null);
+    if(premium()&&!S.studioDown) item.url=fetchVoice(chunk,role,previous,audioCtl.signal).catch(()=>null);
     queue.push(item);
     drain();
   }
@@ -476,7 +483,8 @@ import * as phone from "./phone.js";
           URL.revokeObjectURL(url);
           if(ok||item.g!==gen){ next(); return; }
         }
-        browserVoice();                           // studio voice failed to load or play: use the browser's
+        if(!sig.aborted) S.studioDown=true;        // studio voice failed: browser voice for the rest of this call
+        browserVoice();
       });
     }else browserVoice();
   }
@@ -549,11 +557,11 @@ import * as phone from "./phone.js";
     S.xferCtl=new AbortController();
     await phone.ring(1,AbortSignal.any?AbortSignal.any([S.callCtl.signal,S.xferCtl.signal]):S.callCtl.signal);
     if(S.phase!=="live"||tok!==S.evSeq) return;
-    S.ringing=false; S.xferCtl=null;
+    S.ringing=false; S.xferCtl=null; if(S.sr&&S.sr.dirty) freshSession();
     S.who="dm"; S.hold=false; S.pendingEv=null;
     beat(S.scen.dm+" picks up.");
     flushNotes();
-    S.turns.push({side:"note",text:"[You have just been transferred this call. You pick up the phone.]",shown:""});
+    S.turns.push({side:"note",xfer:true,text:"[You have just been transferred this call. You pick up the phone.]",shown:""});
     askProspect(false);
   }
 
@@ -577,12 +585,15 @@ import * as phone from "./phone.js";
 
   /* ================= the call ================= */
   function startCall(){
+    try{ TTS&&TTS.cancel(); }catch(e){}
+    phone.stopPlayback();
     unlockAudio();
     if(S.spec){ S.spec.release(false); S.spec=null; }
     cancelEvent();
     S.phase="live"; S.who=S.scen.open; S.step=S.scen.open==="dm"?2:1; S.reached=1;
     S.turns=[]; S.peeks=0; S.retries=0; S.outcome=null; S.teardown=null; S.silences=0; S.peekMood=false;
-    S.lastSpokeEnd=0; S.spokenNow=""; S.played=""; S.audible=false; S.pendingNotes=[];
+    S.lastSpokeEnd=0; S.spokenNow=""; S.played=""; S.audible=false; S.pendingNotes=[]; S.endedAt=0;
+    S.liveThem=null; S.studioDown=false;
     S.reqSeq++; S.cutReq=-1; S.queuedAsk=false; S.busy=false;
     S.lastId="c"+Date.now().toString(36); S.callAt=""; S.peekStep=null; S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null;
     S.callCtl=new AbortController();
@@ -692,11 +703,12 @@ import * as phone from "./phone.js";
       return;
     }
     cancelSpec(); clearDeadAir(); S.silences=0;
+    if(S.busy&&(S.speaking||queue.length||speakingChain)) cutThemOff();
     if(S.busy&&S.cutReq===S.reqSeq){              // you cut in while their reply was still arriving:
       flushNotes(); S.turns.push(turn);           // let it finish (its tag may end the call), then answer
       S.queuedAsk=true; $("#say").value=""; renderCall(); return;
     }
-    if(S.busy){ try{S.ctl&&S.ctl.abort();}catch(e){} S.reqSeq++; S.busy=false; }
+    if(S.busy){ dropUnheardReply(); try{S.ctl&&S.ctl.abort();}catch(e){} S.reqSeq++; S.busy=false; }
     cutThemOff();
     flushNotes();
     S.turns.push(turn);
@@ -706,6 +718,12 @@ import * as phone from "./phone.js";
   function lastRepIndex(){
     for(let i=S.turns.length-1;i>=0;i--) if(S.turns[i].side==="rep"&&!S.turns[i].pending) return i;
     return -1;
+  }
+  // a reply we're abandoning before a word of it was heard leaves no trace
+  function dropUnheardReply(){
+    const lt=S.liveThem; S.liveThem=null;
+    if(!lt||lt.req!==S.reqSeq||S.audible||(S.played||"").trim()) return;
+    const i=S.turns.indexOf(lt.turn); if(i>=0) S.turns.splice(i,1);
   }
   function flushNotes(){ if(S.pendingNotes.length){ S.turns.push(...S.pendingNotes); S.pendingNotes=[]; } }
 
@@ -749,7 +767,7 @@ import * as phone from "./phone.js";
     return text;
   }
 
-  const TAG=/\[\[\s*(gatekeeper|dm)\s*\|\s*([1-5])\s*\|\s*(none|transferred|booked|hangup)\s*(?:\|\s*(\d{1,2})\s*)?(?:\|\s*([^\]|]*?)\s*)?\]\]/i;
+  const TAG=/\[\[\s*(gatekeeper|dm)\s*\|\s*([1-5])\s*\|\s*(none|transferred|booked|hangup)\s*(?:\|\s*(\d{1,2})?\s*)?(?:\|\s*([^\]|]*?)\s*)?\]\]/i;
   const slug=(x)=>String(x||"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,40)||null;
 
   async function askProspect(firstTurn,opts={}){
@@ -772,7 +790,7 @@ import * as phone from "./phone.js";
       S.ringing=true; paintState();
       waits.push(phone.ring(1+(Math.random()<0.4?1:0),S.callCtl.signal).then(()=>{
         if(S.phase!=="live") return;
-        S.ringing=false;
+        S.ringing=false; if(S.sr&&S.sr.dirty) freshSession();
         beat(S.scen.open==="dm"?"Line picks up.":"Line picks up. Front desk.");
         paintState();
       }));
@@ -813,7 +831,7 @@ import * as phone from "./phone.js";
       if(!shown) return;
       if(!themTurn){
         themTurn={side:"them",text:shown,who:sayer};
-        S.turns.push(themTurn);
+        S.turns.push(themTurn); S.liveThem={req:myReq,turn:themTurn};
         renderCall();
         const all=$("#stage").querySelectorAll(".turn.them .said");
         liveP=all[all.length-1]||null;
@@ -838,7 +856,7 @@ import * as phone from "./phone.js";
         if(!spoken&&!(tag&&tag[3].toLowerCase()==="hangup")){
           S.lastSpokeEnd=0; flushNotes();
           beat(S.turns.some(t=>t.side==="them")?"Line noise. Press R and say that again.":"Line noise. Press R to get them back.","dir");
-          paintState(); armDeadAir(); return;
+          paintState(); return;
         }
         tagSeen=true; feed(raw.includes("[[")?raw:raw+"[[");      // voice whatever's still unsaid
         if(spoken){
@@ -853,12 +871,14 @@ import * as phone from "./phone.js";
       const pat = tag&&tag[4]!=null?Math.min(10,Math.max(0,parseInt(tag[4],10))):null;
       const obj = tag?slug(tag[5]):null;
       if(ev==="booked"&&sayer!=="dm") ev="none";              // only the decision maker can book
+      if(ev==="transferred"&&(sayer!=="gatekeeper"||!S.scen.gk)) ev="none";   // only the gatekeeper can transfer
+      if(!tag&&/\[\[[^\]]*rep-ended/i.test(raw)) ev="rep-ended";
       if(pat===0&&ev==="none") ev="hangup";                   // out of patience means gone
       if(ev==="hangup"&&obj==="rep-ended") ev="rep-ended";     // you wrapped it up; not an objection
       const keep=themTurn&&S.turns.includes(themTurn);
       if(keep&&tag) Object.assign(themTurn,{patience:pat,objection:ev==="rep-ended"?null:obj,
         tag:{who,step:stp,ev:ev==="rep-ended"?"hangup":ev}});
-      S.who=who; S.step=stp; S.reached=Math.max(S.reached,S.step);
+      S.who=S.scen.gk?who:"dm"; S.step=stp; S.reached=Math.max(S.reached,S.step);
       flushNotes();
       renderCall(); paintBoard(); renderRail();
 
@@ -880,7 +900,7 @@ import * as phone from "./phone.js";
         : e&&e.code==="rate_limited" ? "Too many calls too fast. Give it a minute."
         : S.turns.some(t=>t.side==="them") ? "The line dropped. Press R to run that line again."
         : "The line dropped. Press R to get them back.";
-      beat(msg,"dir"); renderCall(); armDeadAir();
+      beat(msg,"dir"); renderCall();                    // R or your next line recovers; no dead-air strike for our failure
     }
   }
 
@@ -932,10 +952,19 @@ import * as phone from "./phone.js";
   });
 
   function restoreSpeaker(){
-    const last=[...S.turns].reverse().find(t=>t.side==="them"&&t.tag);
-    if(last){ S.who=last.tag.ev==="transferred"?"gatekeeper":last.tag.who; S.step=last.tag.step; }
+    let li=-1;
+    for(let k=S.turns.length-1;k>=0;k--) if(S.turns[k].side==="them"&&S.turns[k].tag){ li=k; break; }
+    const last=li>=0?S.turns[li]:null;
+    const pickedUp=S.turns.slice(li+1).some(t=>t.xfer);
+    if(last){
+      S.step=last.tag.step;
+      S.who= pickedUp ? "dm" : last.tag.ev==="transferred" ? "gatekeeper" : last.tag.who;
+      if(pickedUp) S.step=Math.max(S.step,1);
+    }
     else { S.who=S.scen.open; S.step=S.scen.open==="dm"?2:1; }
     if(!S.scen.gk) S.who="dm";
+    // the gatekeeper was putting you through when you retried: carry on with the transfer
+    return !!(last&&last.tag.ev==="transferred"&&!pickedUp);
   }
 
   function retryLine(){
@@ -956,10 +985,12 @@ import * as phone from "./phone.js";
     const hadDirector=S.turns.slice(i).filter(t=>t.side==="director");
     hushAudio(); S.speaking=false;
     const said=S.turns[i].text;
+    dropUnheardReply();
     S.turns=S.turns.slice(0,i).concat(hadDirector); S.retries++;
-    restoreSpeaker();
+    const resumeTransfer=restoreSpeaker();
     S.lastSpokeEnd=0;                              // don't time your retake from the deleted exchange
     beat("Take two.","dir");
+    if(resumeTransfer){ S.who="gatekeeper"; queueEvent("transferred"); }
     if(!$("#fallback").hidden){ $("#say").value=said; }
     flash("Say it again.");
     paintBoard(); paintState(); renderCall(); renderRail(); armDeadAir();
@@ -980,7 +1011,7 @@ import * as phone from "./phone.js";
   function toggleMic(){
     if(S.mic==="live"){
       if(S.tm||(S.heard+S.interim).trim()) endOfTurn();   // what you already said still counts
-      stopMic(); showFallback(); flash("Mic muted.");
+      stopMic(); showFallback(false); flash("Mic muted — click the box to type, M to unmute.");
     }
     else if(srOK){ startMic(); flash("Mic live."); }
     else flash("No mic in this browser.");
@@ -1010,7 +1041,7 @@ import * as phone from "./phone.js";
     hushAudio(); S.speaking=false; S.ringing=false;
     clearDeadAir();
     stopMic(); clearInterval(S.tick); S.tick=null;
-    S.phase="ended"; S.outcome=outcome; S.busy=false;
+    S.phase="ended"; S.outcome=outcome; S.busy=false; S.endedAt=Date.now();
     if(S.outcome==="hangup") phone.disconnected(); else phone.hangup();
     beat(S.outcome==="booked"?"Meeting booked. Call over.":S.outcome==="hangup"?"They hung up.":S.outcome==="wrapped"?"Call wrapped up.":"You hung up.");
     paintBoard(); paintState(); renderEnd(); renderRail(); logCall(null);

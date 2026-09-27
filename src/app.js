@@ -17,6 +17,7 @@ export const PORT = Number(process.env.PORT) || 3000;
 export const APP_PASSWORD = process.env.APP_PASSWORD || "";
 // Without a password, stay on this machine unless HOST says otherwise.
 export const HOST = process.env.HOST || (APP_PASSWORD ? "0.0.0.0" : "127.0.0.1");
+export const LOOPBACK = /^(127\.|localhost$|::1$|\[::1\]$)/i.test(HOST);
 const PROSPECT_MODEL = process.env.PROSPECT_MODEL || "claude-opus-5";
 const GRADER_MODEL = process.env.GRADER_MODEL || "claude-opus-5";
 const PROSPECT_EFFORT = process.env.PROSPECT_EFFORT || "low";   // spoken replies: speed over depth
@@ -34,6 +35,8 @@ const FALLBACK = { betas: ["server-side-fallback-2026-07-01"], fallbacks: "defau
 const client = new Anthropic();
 export const app = express();
 app.disable("x-powered-by");
+// Behind a local HTTPS proxy, rate-limit by the real client address (never trust remote X-Forwarded-For).
+app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
 
 // Optional shared password (HTTP Basic auth) so a deployed copy isn't an open door to your API keys.
 if (APP_PASSWORD) {
@@ -44,7 +47,7 @@ if (APP_PASSWORD) {
     if (a.length === b.length && timingSafeEqual(a, b)) return next();
     res.set("WWW-Authenticate", 'Basic realm="The Dial Room"').status(401).send("Password required.");
   });
-} else if (!process.env.HOST) {
+} else if (LOOPBACK) {
   // Local-only mode: refuse other Host names so a web page can't reach the API via DNS rebinding.
   app.use((req, res, next) => {
     const host = String(req.headers.host || "").replace(/:\d+$/, "").toLowerCase();
@@ -120,7 +123,7 @@ export function toMessages(turns) {
     if (last.role === role) last.content += "\n" + text;
     else out.push({ role, content: text });
   };
-  let talkedOver = false;
+  let talkedOver = false, lastPat = null;
   for (const t of turns) {
     if (t.side === "rep") {
       const d = deliveryLine(t.meta);
@@ -129,7 +132,9 @@ export function toMessages(turns) {
     } else if (t.side === "them") {
       // Keep the prospect's own control tag in history so its patience carries between turns.
       // A line cut off before its tag arrived goes in untagged; the prompt says to keep the last tag.
-      const tag = t.tag ? `\n[[${t.tag.who}|${t.tag.step}|${t.tag.ev}|${t.patience ?? ""}|${t.objection || "none"}]]` : "";
+      if (t.patience != null) lastPat = t.patience;
+      const pat = t.patience ?? lastPat;
+      const tag = t.tag ? `\n[[${t.tag.who}|${t.tag.step}|${t.tag.ev}${pat != null ? "|" + pat : ""}|${t.objection || "none"}]]` : "";
       push("assistant", t.text + (t.cut ? " —" : "") + tag);
       talkedOver = t.cut;
     } else {
@@ -196,7 +201,7 @@ const Teardown = z.object({
   steps: z.array(z.object({
     n: z.number().int(),
     name: z.string(),
-    grade: z.string(),
+    grade: z.string().describe("one letter: A, B, C, D or F"),
     hit: z.array(z.string()),
     miss: z.array(z.string()),
   })),
@@ -225,9 +230,11 @@ app.post("/api/grade", limit(12), async (req, res) => {
     if (msg.stop_reason === "refusal" || !out) {
       return res.status(502).json({ code: "upstream", message: "Grading didn't come back." });
     }
+    // keep only steps the rep reached that carry a real letter grade
+    out.steps = out.steps.filter((s) => /^[A-F]/i.test(String(s.grade).trim()) && s.n >= 1 && s.n <= reached);
     for (const s of out.steps) {
-      const g = String(s.grade).trim().toUpperCase()[0];
-      s.grade = "ABCDF".includes(g || "-") ? g : "F";
+      const g = String(s.grade).trim()[0].toUpperCase();
+      s.grade = g === "E" ? "F" : g;
     }
     res.json(out);
   } catch (e) {
@@ -275,8 +282,8 @@ app.post("/api/tts", limit(240), async (req, res) => {
       }),
     });
     if (!r.ok || !r.body) {
-      clearTimeout(stall);
       const detail = await r.text().catch(() => "");
+      clearTimeout(stall);
       console.error("tts:", r.status, detail.slice(0, 200));
       return res.status(502).json({ code: "tts_failed" });
     }
@@ -302,7 +309,9 @@ function voiceFor(sc, role) {
 /* ---------------- call log: a small JSON file ---------------- */
 let callsP = null, writing = Promise.resolve();
 function loadCalls() {
-  return (callsP ??= readFile(DATA_FILE, "utf8").then(JSON.parse).catch(async (e) => {
+  return (callsP ??= readFile(DATA_FILE, "utf8").then(JSON.parse)
+    .then((v) => (v && typeof v === "object" && !Array.isArray(v) ? v : Promise.reject(new Error("not a call-log object"))))
+    .catch(async (e) => {
     if (e.code === "ENOENT") return {};
     // Unreadable or corrupt: set it aside rather than overwrite it.
     const aside = `${DATA_FILE}.corrupt-${Date.now()}`;
@@ -326,7 +335,9 @@ function saveCalls(calls) {
 app.get("/api/calls", async (_req, res) => {
   const all = Object.values(await loadCalls());
   all.sort((a, b) => String(b.at).localeCompare(String(a.at)));
-  res.json(all.slice(0, 60));
+  // the newest 60, plus everything from the last day and a half so "Today" counts every dial
+  const now = Date.now();
+  res.json(all.filter((c, i) => i < 60 || now - Date.parse(c.at) < 36 * 3600e3));
 });
 
 app.put("/api/calls/:id", async (req, res) => {

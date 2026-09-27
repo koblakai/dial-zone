@@ -105,16 +105,21 @@ export function primeAudio(){
 // Play an audio URL through the handset filter. Resolves true when it played to
 // the end (or was deliberately stopped), false if it couldn't play at all.
 // onStart fires when sound actually starts.
+let active = null;
+export function stopPlayback(){ active && active(true); }
 export function playThroughLine(url, signal, onStart){
+  active && active(true);                           // one voice on the line at a time
   return new Promise((resolve)=>{
     const a = player || new Audio();
     let done = false, began = false;
     const finish = (ok) => {
       if(done) return; done = true;
+      if(active === finish) active = null;
       a.onended = a.onerror = a.onplaying = null;
       try{ a.pause(); }catch(e){}
       resolve(ok);
     };
+    active = finish;
     a.onplaying = () => { if(!began){ began = true; onStart && onStart(); } };
     a.onended = () => finish(true);
     a.onerror = () => finish(began);

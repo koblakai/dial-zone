@@ -1,4 +1,4 @@
-import { app, PORT, HOST, HAS_BRAIN, ELEVEN_KEY, APP_PASSWORD } from "./src/app.js";
+import { app, PORT, HOST, LOOPBACK, HAS_BRAIN, ELEVEN_KEY, APP_PASSWORD } from "./src/app.js";
 
 const server = app.listen(PORT, HOST, (err) => {
   if (err) {
@@ -9,7 +9,7 @@ const server = app.listen(PORT, HOST, (err) => {
   console.log(`The Dial Room is on http://${shown}:${PORT}`);
   if (!HAS_BRAIN) console.warn("No ANTHROPIC_API_KEY set — the prospect can't answer until you set one.");
   console.log(ELEVEN_KEY ? "Voices: ElevenLabs" : "Voices: browser speech (set ELEVENLABS_API_KEY for realistic voices)");
-  if (process.env.HOST && !APP_PASSWORD) console.warn("HOST is set but APP_PASSWORD isn't — anyone who can reach this server can use your API keys.");
+  if (!LOOPBACK && !APP_PASSWORD) console.warn("Listening beyond this machine without APP_PASSWORD — anyone who can reach this server can use your API keys.");
 });
 server.on("error", (err) => {
   console.error(`Server error: ${err.message}`);
