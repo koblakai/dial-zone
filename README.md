@@ -22,6 +22,10 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 | `HOST` | no | Interface to listen on. Default `127.0.0.1` (this machine only) unless `APP_PASSWORD` is set. |
 | `LOG_LATENCY` | no | Set to `1` to log time-to-first-word for each prospect reply. |
 
+## Hosted on Vercel
+
+`main` deploys automatically to the Vercel project **dial-room** (Express preset; `server.js` exports the app). Set `ANTHROPIC_API_KEY` and `APP_PASSWORD` in the project's Environment Variables, then redeploy. On Vercel the call log lives in `/tmp`, so it's temporary and per instance.
+
 ## What happens on a call
 
 - **It rings.** You hear ringback (one or two rings) before someone picks up; the first reply is already being generated while it rings.
