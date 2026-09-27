@@ -51,7 +51,8 @@ if (APP_PASSWORD) {
   // Local-only mode: refuse other Host names so a web page can't reach the API via DNS rebinding.
   app.use((req, res, next) => {
     const host = String(req.headers.host || "").replace(/:\d+$/, "").toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return next();
+    const bound = HOST.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === bound || host === `[${bound}]`) return next();
     res.status(403).send("Open this app on localhost, or set APP_PASSWORD to share it.");
   });
 }

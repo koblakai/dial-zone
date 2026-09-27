@@ -213,6 +213,7 @@ import * as phone from "./phone.js";
   function freshSession(){
     if(!rec||S.mic!=="live") return;
     S.sr.skip=Infinity;                               // ignore anything the old session still reports
+    S.sr.fresh=true;
     try{ rec.abort(); }catch(e){}
   }
 
@@ -233,6 +234,9 @@ import * as phone from "./phone.js";
         if(S.phase!=="live"||S.mic!=="live"||restarting) return;
         // a session that ended mid-word (error, timeout) keeps what it had heard
         if(S.interim.trim()){ S.heardSegs.push(S.interim.trim()); S.heard=S.heardSegs.join(" "); S.interim=""; }
+        if(S.sr&&S.sr.fresh){                         // our own abort: restart at once so no words are lost
+          try{ newSession(); rec.start(); return; }catch(e){ /* fall through to the delayed restart */ }
+        }
         restarting=true;
         setTimeout(()=>{
           restarting=false;
@@ -285,7 +289,8 @@ import * as phone from "./phone.js";
     }
     const heard=norm(text), src=new Set(norm(S.spokenNow).split(" "));
     if(!heard||src.size<=1) return false;
-    const hw=heard.split(" ").filter(w=>w.length>2&&!STOP.has(w));
+    let hw=heard.split(" ").filter(w=>w.length>2&&!STOP.has(w));
+    if(!hw.length) hw=heard.split(" ").filter(w=>w.length>2);   // "Who are you with?" is all stopwords
     if(!hw.length) return S.audible;                  // filler while they talk: drop it
     let hit=0; hw.forEach(w=>{ if(src.has(w)) hit++; });
     return (hit/hw.length) >= 0.6;                     // mostly their words coming back
@@ -777,6 +782,7 @@ import * as phone from "./phone.js";
     const role = S.who==="dm" ? "dm" : "gk";
     const sayer = S.who;
     const myReq=++S.reqSeq;
+    S.played="";                                       // what the rep has heard of THIS reply
     const ctl=S.ctl=new AbortController();
     const myGen=gen;
     const stale=()=>myReq!==S.reqSeq||S.phase!=="live";   // superseded: a newer request owns S.busy
@@ -985,7 +991,6 @@ import * as phone from "./phone.js";
     const hadDirector=S.turns.slice(i).filter(t=>t.side==="director");
     hushAudio(); S.speaking=false;
     const said=S.turns[i].text;
-    dropUnheardReply();
     S.turns=S.turns.slice(0,i).concat(hadDirector); S.retries++;
     const resumeTransfer=restoreSpeaker();
     S.lastSpokeEnd=0;                              // don't time your retake from the deleted exchange
