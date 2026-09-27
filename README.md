@@ -18,7 +18,8 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 | `ELEVENLABS_API_KEY` | no | Realistic studio voices for the prospect. Without it the browser's built-in voices are used. |
 | `PROSPECT_MODEL` / `GRADER_MODEL` | no | Default `claude-opus-5`. A faster model (e.g. `claude-sonnet-5`) cuts response time. |
 | `PROSPECT_EFFORT` | no | Default `low`, to keep replies snappy. |
-| `APP_PASSWORD` | no | Require a password (any username) to open the app. Set it whenever other people can reach the server. |
+| `APP_PASSWORD` | no | Require a password (any username) to open the app. Setting it also makes the server listen on all interfaces so others can reach it. |
+| `HOST` | no | Interface to listen on. Default `127.0.0.1` (this machine only) unless `APP_PASSWORD` is set. |
 | `LOG_LATENCY` | no | Set to `1` to log time-to-first-word for each prospect reply. |
 
 ## What happens on a call
@@ -31,11 +32,12 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 - **Transfers are real.** When the gatekeeper puts you through you get a hold ring, and then the decision maker picks up and speaks first.
 - **You end on a grade.** Each step you reached gets a letter grade, plus a verdict, the one fix for next call, your worst line against the line you should have said, and a note on delivery.
 
-Keys are a silent channel (the line never hears them): **R** retry your last line · **B** cut in · **H/E** harder/easier · **F** flag a line for the teardown · **M** mute mic · **/** peek at the script · **T** read the room · **X** hang up.
+Keys are a silent channel (the line never hears them): **R** retry your last line · **B** cut in · **H/E** harder/easier · **F** flag a line for the teardown · **M** mute mic · **/** peek at the script · **T** read the room · **X** hang up. While you're typing in the text box every key is text; press **Esc** to leave the box and use the keys.
 
 ## Code layout
 
-- `server.js`: Express app. `/api/prospect` streams the prospect's reply (NDJSON), `/api/grade` returns a structured teardown, `/api/tts` proxies ElevenLabs, `/api/calls` stores the call log in `data/calls.json`.
+- `server.js`: entry point; starts the server.
+- `src/app.js`: the Express app. `/api/prospect` streams the prospect's reply (NDJSON), `/api/grade` returns a structured teardown, `/api/tts` proxies ElevenLabs, `/api/calls` stores the call log in `data/calls.json`.
 - `public/framework.js`: the five steps, the scenarios and personas, and every prompt. The browser and the server both import it.
 - `public/app.js`: the call loop, covering speech recognition, turn-taking, delivery measurement, dead air, playback and the teardown.
 - `public/phone.js`: synthesized phone audio (ringback, clicks, disconnect tone) and the handset filter.
