@@ -370,3 +370,6 @@ app.put("/api/calls/:id", async (req, res) => {
   try { await saveCalls(calls); res.json(rec); }
   catch { res.status(500).json({ code: "save_failed" }); }
 });
+
+// Vercel runs this module directly (its Express preset looks for src/app.js).
+export default app;
