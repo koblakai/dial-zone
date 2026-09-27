@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check src/app.js && node --check public/app.js && node --check public/framework.js && node --check public/phone.js"
+    "check": "node --check server.js && node --check src/app.js && node --check public/app.js && node --check public/framework.js && node --check public/phone.js",
+    "test": "node --test tests/unit.test.js",
+    "test:e2e": "node tests/e2e/run.mjs"
   },
   "engines": {
     "node": ">=20.12"
@@ -18,5 +20,8 @@
     "@anthropic-ai/sdk": "^0.128.0",
     "express": "^5.2.1",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "playwright": "1.56"
   }
 }

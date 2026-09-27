@@ -34,6 +34,15 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 
 Keys are a silent channel (the line never hears them): **R** retry your last line · **B** cut in · **H/E** harder/easier · **F** flag a line for the teardown · **M** mute mic · **/** peek at the script · **T** read the room · **X** hang up. While you're typing in the text box every key is text; press **Esc** to leave the box and use the keys.
 
+## Testing
+
+```bash
+npm test          # unit tests: prompt assembly, conversation history, delivery notes
+npm run test:e2e  # full voice calls in headless Chromium against fake Claude/ElevenLabs APIs
+```
+
+The end-to-end run starts stand-in APIs (`tests/e2e/mock-apis.mjs`) and a scripted microphone (`tests/e2e/fake-mic.js`). It then drives real calls covering ringback, the gatekeeper screen, transfer and pickup, a hesitant rep getting hung up on, dead air, cutting in, echo rejection, speech results that arrive late, retry during a transfer, typing, and grading. It needs a Playwright Chromium (`npx playwright install chromium`, or point `CHROMIUM_PATH` at a Chrome binary).
+
 ## Code layout
 
 - `server.js`: entry point; starts the server.
