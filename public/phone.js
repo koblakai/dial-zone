@@ -11,11 +11,11 @@ export function unlock(){
       const AC = window.AudioContext || window.webkitAudioContext;
       if(!AC) return null;
       ctx = new AC();
-      // voice chain: 300–3400 Hz like a real handset, gently compressed
-      const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 300;
-      const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 3400;
+      // voice chain: 200–6500 Hz like an HD (wideband) call, gently compressed
+      const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 200;
+      const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 6500;
       const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -24; comp.ratio.value = 3;
+      comp.threshold.value = -22; comp.ratio.value = 2.5;
       const gain = ctx.createGain(); gain.gain.value = 1.15;
       hp.connect(lp); lp.connect(comp); comp.connect(gain); gain.connect(ctx.destination);
       line = hp;

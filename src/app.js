@@ -19,13 +19,14 @@ export const APP_PASSWORD = process.env.APP_PASSWORD || "";
 // Without a password, stay on this machine unless HOST says otherwise.
 export const HOST = process.env.HOST || (APP_PASSWORD ? "0.0.0.0" : "127.0.0.1");
 export const LOOPBACK = /^(127\.|localhost$|::1$|\[::1\]$)/i.test(HOST);
-const PROSPECT_MODEL = process.env.PROSPECT_MODEL || "claude-opus-5";
-const GRADER_MODEL = process.env.GRADER_MODEL || "claude-opus-5";
+const PROSPECT_MODEL = process.env.PROSPECT_MODEL || "claude-opus-5-5";
+const GRADER_MODEL = process.env.GRADER_MODEL || "claude-opus-5-5";
+const GRADER_EFFORT = process.env.GRADER_EFFORT || "high";        // the teardown is not real-time: depth over speed
 const PROSPECT_EFFORT = process.env.PROSPECT_EFFORT || "low";   // spoken replies: speed over depth
 // Vercel's filesystem is read-only except /tmp (so the hosted call log is per-instance and temporary)
 const DATA_FILE = path.resolve(ROOT, process.env.DATA_FILE || (ON_VERCEL ? "/tmp/calls.json" : "data/calls.json"));
 export const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
-const ELEVEN_MODEL = process.env.ELEVENLABS_MODEL || "eleven_flash_v2_5";
+const ELEVEN_MODEL = process.env.ELEVENLABS_MODEL || "eleven_turbo_v2_5";   // smoother than flash, still fast enough for a live line
 const ELEVEN_BASE = (process.env.ELEVENLABS_BASE_URL || "https://api.elevenlabs.io").replace(/\/$/, "");
 const TTS_TIMEOUT_MS = 8000;
 export const HAS_BRAIN = !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
@@ -227,7 +228,7 @@ app.post("/api/grade", limit(12), async (req, res) => {
       model: GRADER_MODEL,
       max_tokens: 16000,
       messages: [{ role: "user", content: prompt }],
-      output_config: { format: betaZodOutputFormat(Teardown) },
+      output_config: { format: betaZodOutputFormat(Teardown), effort: GRADER_EFFORT },
       ...FALLBACK,
     });
     const out = msg.parsed_output;
@@ -274,7 +275,7 @@ app.post("/api/tts", limit(240), async (req, res) => {
   res.on("close", () => { if (!res.writableFinished) ctl.abort(); });
   const stall = setTimeout(() => ctl.abort(), TTS_TIMEOUT_MS);   // a stalled upstream falls back to browser voice
   try {
-    const r = await fetch(`${ELEVEN_BASE}/v1/text-to-speech/${encodeURIComponent(voiceFor(sc, role))}/stream?output_format=mp3_44100_64`, {
+    const r = await fetch(`${ELEVEN_BASE}/v1/text-to-speech/${encodeURIComponent(voiceFor(sc, role))}/stream?output_format=mp3_44100_96`, {
       method: "POST",
       signal: ctl.signal,
       headers: { "xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", Accept: "audio/mpeg" },
@@ -282,7 +283,8 @@ app.post("/api/tts", limit(240), async (req, res) => {
         text,
         model_id: ELEVEN_MODEL,
         previous_text: ttsText(req.body?.previous).slice(-300) || undefined,
-        voice_settings: { stability: 0.45, similarity_boost: 0.75, style: 0.15, use_speaker_boost: true },
+        voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.3, use_speaker_boost: true, speed: 1.0 },
+        apply_text_normalization: "auto",
       }),
     });
     if (!r.ok || !r.body) {
