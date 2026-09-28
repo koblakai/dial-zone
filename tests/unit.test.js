@@ -35,12 +35,12 @@ test("toMessages starts with the connect note, alternates roles and ends on a us
     { side: "them", text: "May I ask", cut: true },
     { side: "rep", text: "It's Sam", meta: { barged: true, fillers: [], words: 2 } },
   ]));
-  assert.equal(m[0].content, "[The rep's call connects. You answer the phone.]");
+  assert.equal(m[0].content, "[The phone rings at your practice. You answer it.]");
   for (let i = 1; i < m.length; i++) assert.notEqual(m[i].role, m[i - 1].role);
   assert.equal(m.at(-1).role, "user");
   assert.match(m[1].content, /\[\[gatekeeper\|1\|none\|6\|none\]\]$/);
   assert.equal(m[3].content, "May I ask —", "a line cut off before its tag stays untagged");
-  assert.match(m[4].content, /^\[the rep talked over you\]\nIt's Sam/);
+  assert.match(m[4].content, /^\[the caller talked over you\]\nCaller: It's Sam/);
 });
 
 test("missing patience never becomes 0", () => {
@@ -73,6 +73,17 @@ test("the prospect pool: public contact card fields, unique numbers, sound perso
     assert.equal(p.persona.filter((l) => /^(Hook|Pitch|Close): /.test(l)).length, 3, `${p.id} objection lines`);
     if (p.gkBooks) assert.match(text, /^Authority: /m, `${p.id} says when the office manager decides`);
   }
+});
+
+test("the prospect is always the customer, never the seller", () => {
+  for (const sc of SCENARIOS) {
+    const t = prospectSystem(sc, 3, sc.open, "x");
+    assert.match(t, /^YOUR ROLE, ALWAYS: you are the potential customer/);
+    assert.doesNotMatch(t, /^(Hook|Pitch|Close): /m, `${sc.id}: objection lines are labeled as the prospect's`);
+    assert.match(t, /Your objections while the caller pitches you: /);
+  }
+  const m = toMessages(cleanTurns([{ side: "rep", text: "Hi, it's Sam from Levitate.", meta: { typed: true } }]));
+  assert.equal(m[0].content, "[The phone rings at your practice. You answer it.]\nCaller: Hi, it's Sam from Levitate.");
 });
 
 test("an office manager with authority can run the call and book; a receptionist can't", () => {

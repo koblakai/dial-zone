@@ -120,7 +120,7 @@ export function cleanTurns(turns) {
 // Call transcript -> alternating user/assistant messages that start and end on a user turn.
 // The history is append-only so the prompt-cache prefix stays stable turn to turn.
 export function toMessages(turns) {
-  const out = [{ role: "user", content: "[The rep's call connects. You answer the phone.]" }];
+  const out = [{ role: "user", content: "[The phone rings at your practice. You answer it.]" }];
   const push = (role, text) => {
     const last = out[out.length - 1];
     if (last.role === role) last.content += "\n" + text;
@@ -130,7 +130,8 @@ export function toMessages(turns) {
   for (const t of turns) {
     if (t.side === "rep") {
       const d = deliveryLine(t.meta);
-      push("user", (talkedOver ? "[the rep talked over you]\n" : "") + t.text + (d ? "\n" + d : ""));
+      // "Caller:" keeps roles unmistakable: these are the salesperson's words, never the prospect's.
+      push("user", (talkedOver ? "[the caller talked over you]\n" : "") + "Caller: " + t.text + (d ? "\n" + d : ""));
       talkedOver = false;
     } else if (t.side === "them") {
       // Keep the prospect's own control tag in history so its patience carries between turns.
@@ -144,7 +145,7 @@ export function toMessages(turns) {
       push("user", t.text);            // director notes, silence, transfer pickup
     }
   }
-  if (out[out.length - 1].role !== "user") push("user", "[silence: the rep says nothing]");
+  if (out[out.length - 1].role !== "user") push("user", "[silence: the caller says nothing]");
   return out;
 }
 

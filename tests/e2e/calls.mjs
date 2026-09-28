@@ -47,7 +47,7 @@ try{
     await waitListening();
     await p.evaluate(()=>__speak("It's Sam calling from Levitate".split(" "),120));
     await waitText(/This is Evan/,25000);
-    ok(!/You have just been transferred/.test(await stage()),"transfer note hidden from live transcript");
+    ok(!/put the Levitate caller through/.test(await stage()),"transfer note hidden from live transcript");
     await waitListening();
     await p.waitForTimeout(2200);
     await p.evaluate(()=>__speak("um so uh basically we um help law firms".split(" "),[150,900,150,150,150,150,150,150,150]));

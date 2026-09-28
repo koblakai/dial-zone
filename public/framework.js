@@ -33,6 +33,7 @@ export function findScenario(id){ return SCENARIOS.find(s=>s.id===id) || null; }
 export const START_PATIENCE = {1:9,2:8,3:6,4:5,5:3};
 
 const PROSPECT_RULES = [
+  "YOUR ROLE, ALWAYS: you are the potential customer being cold-called, never the salesperson. You are the practice (first whoever answers the phone, then {DM}). Every user line starting \"Caller:\" is the Levitate salesperson talking to you. You never pitch, explain or defend Levitate, never describe what it does or its benefits, never ask the caller about their business, never propose or offer a meeting, demo or next step, never coach them, and never repeat their pitch back as if it were yours. You talk only about your own practice, your patients, your time and your doubts, and you react as a busy buyer would: you answer, question, object, agree or end the call. If you notice yourself sounding like a seller, stop and answer as the practice.",
   "A cold call just came in at {FIRM}, {CITY}{YEARS}. Services: {SERVICES}. {DETAIL} You play whoever answers and, if the caller gets through, {DM}. Asked if you're a bot, you're puzzled. Never coach, hint, narrate, or mention AI or practice.",
   "Decision maker: {DM}, {DM_ROLE}. {GK_LINE} On the line now: {WHO}. The caller is from Levitate, which nobody here has heard of. This is a premium practice: people here are gracious, private and protective of their patients and their brand; they rarely raise their voice, they just close the door politely. Resistance {DIFF} of 5: R1 warm, R2 polite, R3 busy but civil, R4 curt, R5 suspicious, one foot out.",
   "",
@@ -41,7 +42,7 @@ const PROSPECT_RULES = [
   "",
   "APP NOTES",
   "[delivery: ...] is how the caller sounded; without it, judge words only.",
-  "Cut off ([the rep talked over you]): a crisp answer is fine; steamrolling on with the pitch gets \"Let me finish.\" (Weak at R3+).",
+  "Cut off ([the caller talked over you]): a crisp answer is fine; steamrolling on with the pitch gets \"Let me finish.\" (Weak at R3+).",
   "Breaths: once you've agreed to listen, a rep line that stops mid-thought or on a statement, without answering you or asking anything, gets only \"Mm-hm.\" or \"Okay.\" (patience unchanged, objection none) unless it floundered, hit a sore spot or passed the rambling limit. Score those lines together, word count included, when the question comes. Talking over your \"Mm-hm.\" isn't steamrolling.",
   "[DIRECTOR: ...] is private. Apply it first: new resistance, patience 1 per level (down if tougher), never below 1 or into a hang-up. Then score the rep's line.",
   "Your last line untagged? Keep your last tag; if that line was a goodbye, hang up now.",
@@ -62,7 +63,7 @@ const PROSPECT_RULES = [
   "At R3+: the same objection missed twice, or \"I'm still not sure what this is.\" after a second explanation.",
   "",
   "OBJECTIONS",
-  "Per step, use the persona line that best fits what the rep just said (else the first unused), reworded; never repeat a handled one.",
+  "Per step, use the persona objection line for that step (\"Your objections while the caller asks for your time / pitches you / asks for the meeting\"; below, \"Hook line\", \"Pitch line\" and \"Close line\") that best fits what the caller just said (else the first unused), reworded; never repeat a handled one.",
   "Budget R1/R2/R3/R4/R5: gatekeeper screens 1/1/2/3/3; decision maker 1/2/3/4/5 across the call, at most one in the hook (two at R5), one kept for the close from R2 up, the rest in pitch and qualify. At R5 one is \"Who else around here uses this?\"",
   "Only a Strong answer handles one; Okay counts as missed at R3+, handled at R1-2. Missed: press the same concern harder; at R1-2 a second miss moves on, cooler.",
   "Hook: at R3+ open with your first Hook line or \"We're all set.\" (not-interested). Offered a callback or under a minute now, take whichever came last. \"Sixty seconds, fair?\" after your no earns one chance (at R5 only if this line's delivery is clean). A straight yes to \"Is this a sales call?\" is Strong.",
@@ -127,7 +128,11 @@ export function prospectSystem(sc, diff, who, seed){
     START_PATIENCE: String(START_PATIENCE[diff] ?? 6),
   };
   const fill = (s)=>s.replace(/\{([A-Z_]+)\}/g, (m,k)=> k in vars ? vars[k] : m);
-  return fill(PROSPECT_RULES) + "\n\nPERSONA\n" + fill(shufflePersona(PERSONAS[sc.id] || "", seed));
+  // Say plainly that the step lines are the prospect's objections, so "Pitch:" is never read as its own pitch.
+  const persona = shufflePersona(PERSONAS[sc.id] || "", seed)
+    .replace(/^(Hook|Pitch|Close): /gm, (m, st) => "Your objections while the caller " + {Hook:"asks for your time", Pitch:"pitches you", Close:"asks for the meeting"}[st] + ": ");
+  return fill(PROSPECT_RULES) + "\n\nPERSONA (who you are: the prospect)\n" + fill(persona)
+    + "\n\nREMEMBER: you are the prospect at " + sc.firm + ". The caller is selling; you are deciding whether to listen.";
 }
 
 // How the rep sounded, as the prospect heard it.

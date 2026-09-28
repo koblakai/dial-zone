@@ -779,7 +779,7 @@ import * as phone from "./phone.js";
     S.who="dm"; S.hold=false; S.pendingEv=null;
     beat(S.scen.dm+" picks up.");
     flushNotes();
-    S.turns.push({side:"note",xfer:true,text:"[You have just been transferred this call. You pick up the phone.]",shown:""});
+    S.turns.push({side:"note",xfer:true,text:"[Your front desk just put the Levitate caller through to you. You pick up the phone.]",shown:""});
     askProspect(false);
   }
 
