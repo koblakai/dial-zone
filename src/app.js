@@ -350,6 +350,7 @@ app.put("/api/calls/:id", async (req, res) => {
   const rec = {
     id,
     at: typeof b.at === "string" ? b.at.slice(0, 40) : new Date().toISOString(),
+    sid: /^[a-z0-9-]{1,40}$/.test(b.sid) ? b.sid : "",
     firm: clean(b.firm).slice(0, 80),
     diff: clampDiff(b.diff),
     reached: Math.min(5, Math.max(1, parseInt(b.reached, 10) || 1)),

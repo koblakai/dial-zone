@@ -1,4 +1,4 @@
-import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET } from "./framework.js";
+import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET, findScenario } from "./framework.js";
 import * as phone from "./phone.js";
 
   const SILENCE_MS=1000;              // end-of-turn after this much quiet…
@@ -30,6 +30,7 @@ import * as phone from "./phone.js";
     pendingNotes:[],
     deadAir:null, silences:0, callCtl:null,
     lineCheck:{busy:false,text:"",dot:""},
+    view:"contacts", pane:"list", filter:"all", query:"", dial:"", padOpen:false,
     cfg:{brain:true,tts:"browser"}
   };
   const $=(s)=>document.querySelector(s);
@@ -63,21 +64,66 @@ import * as phone from "./phone.js";
     try{ if(TTS){ const u=new SpeechSynthesisUtterance(" "); u.volume=0; TTS.speak(u); } }catch(e){}
   }
 
-  /* ================= board ================= */
+  /* ================= icons ================= */
+  const ICONS={
+    phone:'<path d="M5 4h3l2 5-2.5 1.5a11 11 0 0 0 6 6L15 14l5 2v3a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>',
+    hang:'<path d="M3 15.5c0-2 4-4.5 9-4.5s9 2.5 9 4.5l-.5 2.2a1 1 0 0 1-1.2.7l-3.3-.9a1 1 0 0 1-.7-.9l-.2-2c-2-.7-4.2-.7-6.2 0l-.2 2a1 1 0 0 1-.7.9l-3.3.9a1 1 0 0 1-1.2-.7z"/>',
+    contacts:'<circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-3.6 3.8-5.6 7.5-5.6s6.7 2 7.5 5.6"/>',
+    recents:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    keypad:'<circle cx="6" cy="5" r="1.3"/><circle cx="12" cy="5" r="1.3"/><circle cx="18" cy="5" r="1.3"/><circle cx="6" cy="11" r="1.3"/><circle cx="12" cy="11" r="1.3"/><circle cx="18" cy="11" r="1.3"/><circle cx="6" cy="17" r="1.3"/><circle cx="12" cy="17" r="1.3"/><circle cx="18" cy="17" r="1.3"/><circle cx="12" cy="22" r="1.3"/>',
+    search:'<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
+    mic:'<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
+    retry:'<path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5"/><path d="M4 4v4.5h4.5"/>',
+    cut:'<path d="M7 11V6.5a1.5 1.5 0 0 1 3 0V11m0-1V5a1.5 1.5 0 0 1 3 0v5m0 0V6a1.5 1.5 0 0 1 3 0v6m0-3.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a7 7 0 0 1-5.4-2.6L3.8 15a1.6 1.6 0 0 1 2.4-2.1L7 14"/>',
+    flag:'<path d="M5 21V4m0 0h11l-2 4 2 4H5"/>',
+    script:'<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 16h5"/>',
+    room:'<path d="M3.5 16a8.5 8.5 0 1 1 17 0"/><path d="m12 16 4-5"/>',
+    up:'<path d="m6 14 6-6 6 6"/>',
+    down:'<path d="m6 10 6 6 6-6"/>',
+    next:'<path d="M5 12h13m-5-5 5 5-5 5"/>',
+    shuffle:'<path d="M3 7h3.5c4 0 5 10 9 10H21m0 0-3-3m3 3-3 3M3 17h3.5c1.5 0 2.5-1.4 3.4-3.2M21 7h-5.5c-1.5 0-2.5 1.4-3.4 3.2M21 7l-3-3m3 3-3 3"/>',
+    back:'<path d="m14 6-6 6 6 6"/>'
+  };
+  function icon(name){
+    const s=document.createElementNS("http://www.w3.org/2000/svg","svg");
+    s.setAttribute("viewBox","0 0 24 24"); s.setAttribute("fill","none"); s.setAttribute("stroke","currentColor");
+    s.setAttribute("stroke-width","1.8"); s.setAttribute("stroke-linecap","round"); s.setAttribute("stroke-linejoin","round");
+    s.setAttribute("aria-hidden","true");
+    s.innerHTML=ICONS[name]||"";                       // constant markup from ICONS only
+    return s;
+  }
+  const vclass=(v)=>v==="Med spa"?"spa":v;
+  function initials(name){
+    const w=String(name||"").replace(/^(Dr\.?)\s+/i,"").split(/\s+/).filter(Boolean);
+    return ((w[0]||"?")[0]+(w.length>1?w[w.length-1][0]:"")).toUpperCase();
+  }
+  function avatar(sc,big){ return el("span","av "+vclass(sc.vertical)+(big?" big":""),initials(sc.dm)); }
+  const digits=(s)=>String(s||"").replace(/\D/g,"");
+
+  /* ================= board: call header, ladder, panes ================= */
   function paintBoard(){
-    const live=S.phase==="live";
+    const live=S.phase==="live", inCall=S.phase!=="setup";
+    $("#app").dataset.pane = inCall ? "main" : S.pane;
+    $("#callhead").hidden=!inCall;
+    if(inCall){
+      const av=$("#headAv"); av.className="av "+vclass(S.scen.vertical); av.textContent=initials(S.scen.dm);
+      $("#headName").textContent=S.scen.dm;
+      $("#headSub").textContent=S.scen.firm+" · "+S.scen.phone;
+    }
     $("#notchBox").hidden=!live; $("#notch").textContent=S.diff;
     const lad=$("#ladder"); lad.textContent="";
     STEPS.forEach((st)=>{
-      const b=el("span","rung",st.n+" "+st.name.toUpperCase());
+      const b=el("span","rung",st.n+" "+st.name);
       if(live&&st.n===S.step) b.className="rung now";
-      else if(st.n<S.reached) b.className="rung done";
+      else if(st.n<S.reached||(!live&&st.n<=S.reached)) b.className="rung done";
       lad.appendChild(b);
     });
     $("#bar").hidden=!live;
+    renderNav();
   }
   function startClock(){
     S.startedAt=Date.now(); clearInterval(S.tick);
+    $("#clock").textContent="0:00";
     S.tick=setInterval(()=>{
       const s=Math.floor((Date.now()-S.startedAt)/1000);
       $("#clock").textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
@@ -86,34 +132,209 @@ import * as phone from "./phone.js";
   function elapsed(){ return S.startedAt?Math.floor(((S.endedAt||Date.now())-S.startedAt)/1000):0; }
   function fmt(s){ return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); }
 
-  function speakerName(){ return S.who==="dm"?first(S.scen.dm):(S.scen.gk||"They"); }
   function paintState(){
     const orb=$("#orb"), txt=$("#stateTxt");
     let cls="off", label="Off hook";
     if(S.phase==="live"){
       if(S.ringing){ cls="think"; label="Ringing…"; }
-      else if(S.speaking){ cls="talk"; label=speakerName()+" is talking"; }
+      else if(S.speaking){ cls="talk"; label=(S.who==="dm"?S.scen.dm:(S.scen.gk||"They"))+" is talking"; }
       else if(S.busy&&!S.spec){ cls="think"; label="…"; }
       else if(S.mic==="live"){ cls="listen"; label="Your turn — talk"; }
       else if(S.mic==="denied"){ cls="off"; label="Mic blocked — type instead"; }
       else if(S.mic==="failed"){ cls="off"; label="Speech service unavailable — type instead"; }
       else if(S.mic==="unsupported"){ cls="off"; label="No mic here — type instead"; }
-      else { cls="off"; label="Mic off — type instead"; }
+      else { cls="off"; label="Mic muted — type instead"; }
     }
     orb.className="orb "+cls; txt.textContent=label;
+    const mb=document.querySelector('.ctrl[data-k="M"]');
+    if(mb){ mb.setAttribute("aria-pressed",String(S.mic!=="live")); mb.querySelector("span").textContent=S.mic==="live"?"Mute":"Unmute"; }
     updateMouth();
   }
   function first(n){ return String(n||"").split(" ")[0]; }
 
-  /* ================= setup ================= */
+  /* ================= nav + contact list ================= */
+  function renderNav(){
+    const n=$("#nav"); n.textContent="";
+    n.appendChild(el("div","brand","DR")).title="The Dial Room";
+    [["contacts","Contacts"],["recents","Recents"],["keypad","Keypad"]].forEach(([v,label])=>{
+      const b=el("button","navbtn"); b.type="button";
+      b.setAttribute("aria-current",String(S.view===v));
+      b.append(icon(v),el("span","",label));
+      b.onclick=()=>{ S.view=v; if(S.phase==="setup") S.pane="list"; renderSide(); paintBoard(); };
+      n.appendChild(b);
+    });
+    const foot=el("div","navfoot"); foot.appendChild(el("span","me","You")).title="Available";
+    n.appendChild(foot);
+  }
+
+  function filtered(){
+    const q=S.query.trim().toLowerCase(), qd=digits(q);
+    return SCENARIOS.filter((sc)=>{
+      if(S.filter!=="all"&&sc.vertical!==S.filter) return false;
+      if(!q) return true;
+      if(qd.length>=3&&digits(sc.phone).includes(qd)) return true;
+      return [sc.dm,sc.firm,sc.city,sc.vertical,...(sc.services||[])].join(" ").toLowerCase().includes(q);
+    }).sort((a,b)=>lastName(a.dm).localeCompare(lastName(b.dm)));
+  }
+  function lastName(n){ const w=String(n).split(" "); return w[w.length-1]; }
+
+  function selectContact(sc){
+    if(S.phase==="live") { flash("Finish this call first."); return; }
+    S.scen=sc; S.pane="main";
+    if(S.phase==="ended"){ S.phase="setup"; }
+    S.lineCheck={busy:false,text:S.lineCheck.text&&!S.lineCheck.busy?S.lineCheck.text:"",dot:S.lineCheck.dot||""};
+    renderSetup(); renderSide(); renderRail();
+  }
+
+  function renderSide(){
+    const w=$("#side"); w.textContent="";
+    if(S.view==="recents") return renderRecents(w);
+    if(S.view==="keypad") return renderDialer(w);
+    const head=el("div","sidehead");
+    const h=el("h2","","Contacts"); h.appendChild(el("small","",String(SCENARIOS.length)));
+    head.appendChild(h);
+    const sb=el("label","search"); sb.appendChild(icon("search"));
+    const inp=el("input"); inp.type="search"; inp.placeholder="Search name, practice, city"; inp.value=S.query;
+    inp.setAttribute("aria-label","Search contacts");
+    inp.oninput=()=>{ S.query=inp.value; paintList(); };
+    sb.appendChild(inp); head.appendChild(sb);
+    const chips=el("div","chips");
+    [["all","All"],["Chiropractic","Chiropractic"],["Med spa","Med spa"],["Acupuncture","Acupuncture"]].forEach(([v,l])=>{
+      const c=el("button","chip",l); c.type="button"; c.setAttribute("aria-pressed",String(S.filter===v));
+      c.onclick=()=>{ S.filter=v; renderSide(); };
+      chips.appendChild(c);
+    });
+    head.appendChild(chips); w.appendChild(head);
+    const list=el("div","list"); list.id="clist"; w.appendChild(list);
+    paintList();
+  }
+  function paintList(){
+    const list=$("#clist"); if(!list) return;
+    list.textContent="";
+    const rows=filtered();
+    if(!rows.length){ list.appendChild(el("p","empty","No contacts match.")); return; }
+    let letter="";
+    rows.forEach((sc)=>{
+      const L=lastName(sc.dm)[0].toUpperCase();
+      if(L!==letter){ letter=L; list.appendChild(el("div","group",L)); }
+      const r=el("button","row"); r.type="button";
+      r.setAttribute("aria-current",String(sc.id===S.scen.id));
+      r.appendChild(avatar(sc));
+      const t=el("span","txt"); t.appendChild(el("b","",sc.dm));
+      t.appendChild(el("span","",sc.firm)); r.appendChild(t);
+      const end=el("span","end"); const v=el("span"); v.appendChild(el("i","vdot "+vclass(sc.vertical)));
+      v.append(sc.city.split(",")[1]?.trim()||""); end.appendChild(v); r.appendChild(end);
+      r.onclick=()=>selectContact(sc);
+      list.appendChild(r);
+    });
+  }
+
+  function scenFor(c){ return (c.sid&&findScenario(c.sid))||SCENARIOS.find(s=>s.firm===c.firm)||null; }
+  function outcomeText(c){
+    return c.outcome==="booked"?"Meeting booked":c.outcome==="hangup"?"They hung up · step "+(c.reached||1)
+      :c.outcome==="wrapped"?"Follow-up · step "+(c.reached||1):"You ended · step "+(c.reached||1);
+  }
+  function whenText(iso){
+    const d=new Date(iso); if(isNaN(d)) return "";
+    return dayOf(iso)===today()?d.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):d.toLocaleDateString([], {month:"short",day:"numeric"});
+  }
+  function renderRecents(w){
+    const head=el("div","sidehead"); head.appendChild(el("h2","","Recents")); w.appendChild(head);
+    const list=el("div","list"); w.appendChild(list);
+    if(!S.calls.length){ list.appendChild(el("p","empty","No calls yet. Pick a contact and call.")); return; }
+    S.calls.slice(0,60).forEach((c)=>{
+      const sc=scenFor(c);
+      const r=el("button","row"); r.type="button";
+      r.appendChild(sc?avatar(sc):el("span","av","?"));
+      const t=el("span","txt"); t.appendChild(el("b","",sc?sc.dm:c.firm));
+      t.appendChild(el("span","",outcomeText(c))); r.appendChild(t);
+      const end=el("span","end"); end.appendChild(el("span","",whenText(c.at)));
+      const g=String(c.grade||"").toUpperCase(); if(g) end.appendChild(el("span","g "+g,g));
+      r.appendChild(end);
+      r.onclick=()=>{ if(sc) selectContact(sc); };
+      list.appendChild(r);
+    });
+  }
+
+  const PADKEYS=[["1",""],["2","ABC"],["3","DEF"],["4","GHI"],["5","JKL"],["6","MNO"],["7","PQRS"],["8","TUV"],["9","WXYZ"],["*",""],["0","+"],["#",""]];
+  function keypadGrid(onKey){
+    const g=el("div","keypad");
+    PADKEYS.forEach(([k,sub])=>{
+      const b=el("button","dk"); b.type="button"; b.dataset.key=k;
+      b.append(el("b","",k),el("small","",sub));
+      b.onmousedown=(e)=>e.preventDefault();
+      b.onclick=()=>{ phone.dtmf(k); onKey(k); };
+      g.appendChild(b);
+    });
+    return g;
+  }
+  function dialMatch(){
+    const d=digits(S.dial); if(d.length<4) return null;
+    return SCENARIOS.find(sc=>digits(sc.phone).endsWith(d)||digits(sc.phone)===d)||null;
+  }
+  function renderDialer(w){
+    const head=el("div","sidehead"); head.appendChild(el("h2","","Keypad")); w.appendChild(head);
+    const box=el("div","dialer");
+    const num=el("input","dialnum"); num.value=S.dial; num.placeholder="Enter a number"; num.inputMode="tel";
+    num.setAttribute("aria-label","Number to dial");
+    const match=el("div","dialmatch");
+    const show=()=>{ const m=dialMatch(); match.textContent=m?m.dm+" · "+m.firm:(digits(S.dial).length>=4?"No contact at that number":""); };
+    num.oninput=()=>{ S.dial=num.value.replace(/[^\d()+\-\s*#]/g,""); show(); };
+    num.onkeydown=(e)=>{ if(e.key==="Enter") dialNow(); };
+    box.appendChild(num); box.appendChild(match);
+    box.appendChild(keypadGrid((k)=>{ S.dial+=k; num.value=S.dial; show(); }));
+    const go=el("button","dialgo"); go.type="button"; go.setAttribute("aria-label","Call"); go.appendChild(icon("phone"));
+    go.onclick=dialNow; box.appendChild(go);
+    const pd=el("button","ghostbtn"); pd.type="button"; pd.append(icon("shuffle"),el("span","","Power dial a random contact"));
+    pd.onclick=()=>{ if(S.phase==="live") return; S.scen=pickNext(); S.phase="setup"; startCall(); };
+    box.appendChild(pd);
+    box.appendChild(el("p","hint","Every contact’s number is on their card. Type one in to dial it."));
+    w.appendChild(box); show();
+  }
+  function dialNow(){
+    if(S.phase==="live") return;
+    const m=dialMatch();
+    if(!m){ const d=$(".dialmatch"); if(d) d.textContent=digits(S.dial).length?"No contact at that number":"Enter a number"; return; }
+    S.scen=m; S.dial=""; S.phase="setup"; startCall();
+  }
+  // a different contact, favouring ones you haven't called today
+  function pickNext(){
+    const pool=filtered().length>1?filtered():SCENARIOS;
+    const calledToday=new Set(S.calls.filter(c=>dayOf(c.at)===today()).map(c=>c.sid||c.firm));
+    const fresh=pool.filter(sc=>sc.id!==S.scen.id&&!calledToday.has(sc.id)&&!calledToday.has(sc.firm));
+    const from=fresh.length?fresh:pool.filter(sc=>sc.id!==S.scen.id);
+    return from[Math.floor(Math.random()*from.length)]||S.scen;
+  }
+
+  /* ================= contact card (before the call) ================= */
   function renderSetup(){
     if(S.phase!=="setup") return;
+    const sc=S.scen;
     const w=$("#stage"); w.textContent="";
-    const box=el("div","setup");
-    box.appendChild(el("p","eyebrow","Levitate · Chiropractic · Med spa · Acupuncture"));
-    const h1=el("h1"); h1.append("Pick up the phone. ",el("em","","Mean it."));
-    box.appendChild(h1);
-    box.appendChild(el("p","sub","Premium practices, real front desks, owners who guard their patients and their brand. They answer in real time, raise the objections you’ll actually hear, and quietly end the call the moment you sound unsure or like every other vendor. Keys are a silent channel — nothing you press is heard on the line."));
+    const box=el("div","profile");
+    const back=el("button","backlink"); back.type="button"; back.append(icon("back"),el("span","","Contacts"));
+    back.onclick=()=>{ S.pane="list"; paintBoard(); };
+    box.appendChild(back);
+
+    const head=el("div","phead");
+    head.appendChild(avatar(sc,true));
+    const who=el("div","who");
+    who.appendChild(el("h1","",sc.dm));
+    who.appendChild(el("span","firm",sc.firm));
+    const meta=el("span","meta"); meta.appendChild(el("i","vdot "+vclass(sc.vertical))); meta.append(sc.vertical+" · "+sc.city);
+    who.appendChild(meta);
+    head.appendChild(who);
+    box.appendChild(head);
+
+    const row=el("div","callrow");
+    const go=el("button","go"); go.type="button"; go.append(icon("phone"),el("span","","Call "+sc.phone));
+    go.disabled=!S.cfg.brain;
+    go.onclick=startCall;
+    row.appendChild(go);
+    const nx=el("button","ghostbtn"); nx.type="button"; nx.append(icon("next"),el("span","","Next contact"));
+    nx.onclick=()=>selectContact(pickNext());
+    row.appendChild(nx);
+    box.appendChild(row);
 
     if(!S.cfg.brain){
       const wb=el("div","warnbox");
@@ -122,20 +343,43 @@ import * as phone from "./phone.js";
       box.appendChild(wb);
     }
 
-    // line check
+    const info=el("div","card");
+    info.appendChild(el("h3","","Contact"));
+    const dl=el("dl","facts");
+    const fact=(k,v)=>{ dl.appendChild(el("dt","",k)); const dd=el("dd"); if(v instanceof Node) dd.appendChild(v); else dd.textContent=v; dl.appendChild(dd); };
+    fact("Name",sc.dm);
+    fact("Practice",sc.firm);
+    fact("Phone",sc.phone);
+    fact("Location",sc.city);
+    fact("In business",sc.years?sc.years+" years":"Unknown");
+    const tags=el("div","tags"); (sc.services||[]).forEach(s=>tags.appendChild(el("span","tag",s)));
+    fact("Services",tags);
+    info.appendChild(dl);
+    box.appendChild(info);
+
+    const set=el("div","card");
+    set.appendChild(el("h3","","Practice settings"));
+    const seg=el("div","seg");
+    ["Warm","Normal","Busy","Curt","Brutal"].forEach((lbl,i)=>{
+      const b=el("button","",(i+1)+" · "+lbl); b.type="button";
+      b.setAttribute("aria-pressed",String(S.diff===i+1));
+      b.onclick=()=>{ S.diff=i+1; renderSetup(); };
+      seg.appendChild(b);
+    });
+    set.appendChild(el("span","hint","Resistance — day one, run it verbatim at 2–3. Raise it once the script is muscle."));
+    set.appendChild(seg);
+
     const lc=S.lineCheck;
-    const mc=el("fieldset");
-    mc.appendChild(el("p","eyebrow","Line check"));
-    const row=el("div","checkline");
+    const line=el("div","checkline");
     const micText = lc.text || (!srOK?"This browser can’t hear you (use Chrome or Edge) — you can type"
-      : S.mic==="denied"?"Mic blocked — allow it in the address bar" : "Mic — not tested");
+      : S.mic==="denied"?"Mic blocked — allow it in the address bar" : "Mic not tested");
     const micDot = lc.dot || (!srOK||S.mic==="denied"?"bad":"");
-    row.appendChild(el("span","dot "+micDot)); row.appendChild(el("span","",micText));
-    row.appendChild(el("span","hint","·"));
-    row.appendChild(el("span","dot "+(voiceOK()?"ok":"bad")));
-    row.appendChild(el("span","",premium()?"Studio voices on":voiceOK()?"Browser voices (set ELEVENLABS_API_KEY for studio voices)":"No voice out here"));
-    mc.appendChild(row);
-    const test=el("button","ghostbtn",lc.busy?"Testing…":"Test the line"); test.type="button";
+    line.appendChild(el("span","dot "+micDot)); line.appendChild(el("span","",micText));
+    line.appendChild(el("span","hint","·"));
+    line.appendChild(el("span","dot "+(voiceOK()?"ok":"bad")));
+    line.appendChild(el("span","",premium()?"Studio voices on":voiceOK()?"Browser voices":"No voice out here"));
+    set.appendChild(line);
+    const test=el("button","ghostbtn"); test.type="button"; test.append(icon("mic"),el("span","",lc.busy?"Testing…":"Test the line"));
     test.disabled=lc.busy;
     test.onclick=async()=>{
       unlockAudio();
@@ -143,48 +387,16 @@ import * as phone from "./phone.js";
       const ok=await askMic();
       if(S.phase!=="setup"){ S.lineCheck={busy:false,text:"",dot:""}; return; }
       S.lineCheck={busy:true,
-        text: ok===true?"Mic ready":ok===null?"The browser will ask for the mic when you dial":S.mic==="denied"?"Mic blocked — allow it in the address bar":"Mic unavailable",
+        text: ok===true?"Mic ready":ok===null?"The browser will ask for the mic when you call":S.mic==="denied"?"Mic blocked — allow it in the address bar":"Mic unavailable",
         dot: ok===true?"ok":ok===null?"wait":"bad"};
       renderSetup();
-      const sc=S.scen, role=sc.gk?"gk":"dm";
-      try{ await speakOnce(sc.firm.replace("&","and")+", this is "+(sc.gk||first(sc.dm))+".",role); }
+      try{ await speakOnce("Line check. This is how the other end will sound.","dm"); }
       finally{ S.lineCheck={...S.lineCheck,busy:false}; renderSetup(); }
     };
-    mc.appendChild(test);
-    box.appendChild(mc);
+    set.appendChild(test);
+    set.appendChild(el("p","hint","Headphones help — without them the mic can hear the prospect. Nothing you press on the call is heard on the line."));
+    box.appendChild(set);
 
-    const f1=el("fieldset");
-    f1.appendChild(el("p","eyebrow","Who you’re calling"));
-    const cards=el("div","cards");
-    SCENARIOS.forEach((sc)=>{
-      const b=el("button","card"); b.type="button";
-      b.setAttribute("aria-pressed",String(sc.id===S.scen.id));
-      b.appendChild(el("em","",sc.tag));
-      b.appendChild(el("b","",sc.firm));
-      b.appendChild(el("span","",sc.detail));
-      b.onclick=()=>{ S.scen=sc; renderSetup(); };
-      cards.appendChild(b);
-    });
-    f1.appendChild(cards); box.appendChild(f1);
-
-    const f2=el("fieldset");
-    f2.appendChild(el("p","eyebrow","Resistance"));
-    const dial=el("div","dial");
-    ["Warm","Normal","Busy","Curt","Brutal"].forEach((lbl,i)=>{
-      const b=el("button","",(i+1)+" · "+lbl); b.type="button";
-      b.setAttribute("aria-pressed",String(S.diff===i+1));
-      b.onclick=()=>{ S.diff=i+1; renderSetup(); paintBoard(); };
-      dial.appendChild(b);
-    });
-    f2.appendChild(dial);
-    f2.appendChild(el("p","hint","Day one, run it verbatim at 2–3. Raise it once the script is muscle."));
-    box.appendChild(f2);
-
-    const go=el("button","go","Dial"); go.type="button";
-    go.disabled=!S.cfg.brain;
-    go.onclick=startCall;
-    box.appendChild(go);
-    box.appendChild(el("p","hint","Headphones help — without them the mic can hear the prospect."));
     w.appendChild(box); paintBoard(); paintState();
   }
 
@@ -558,7 +770,7 @@ import * as phone from "./phone.js";
   // gatekeeper put you through: a ring, then the decision maker picks up and speaks first
   async function transfer(tok){
     if(S.phase!=="live"||tok!==S.evSeq) return;
-    beat("On hold — transferring to "+S.scen.dm+"…");
+    beat("On hold — transferring…");
     S.ringing=true; paintState();
     S.xferCtl=new AbortController();
     await phone.ring(1,AbortSignal.any?AbortSignal.any([S.callCtl.signal,S.xferCtl.signal]):S.callCtl.signal);
@@ -603,18 +815,18 @@ import * as phone from "./phone.js";
     S.reqSeq++; S.cutReq=-1; S.queuedAsk=false; S.busy=false;
     S.lastId="c"+Date.now().toString(36); S.callAt=""; S.peekStep=null; S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null;
     S.callCtl=new AbortController();
-    startClock(); renderKeys(); paintBoard(); renderCall(); renderRail();
+    startClock(); renderKeys(); paintBoard(); paintList(); renderCall(); renderRail();
     $("#fallback").hidden = srOK && S.mic!=="denied";
     if(!$("#fallback").hidden) showFallback();
     startMic();
-    beat("Dialing "+S.scen.firm+"…");
+    beat("Calling "+S.scen.phone+"…");
     askProspect(true);
   }
 
   function beat(txt,dir){ S.turns.push({side:"beat",text:txt,dir:!!dir}); renderCall(); }
 
   function whoLabel(who){
-    return who==="dm" ? S.scen.dm.toUpperCase() : (S.scen.gk||"FRONT DESK").toUpperCase();
+    return who==="dm" ? S.scen.dm : (S.scen.gk||"Front desk");
   }
 
   let mouthBox=null, mouthLine=null, vadBar=null;
@@ -624,7 +836,7 @@ import * as phone from "./phone.js";
     if(t.side==="beat") return el("div","beat"+(t.dir?" dir":""),t.text);
     if(t.side==="note") return el("div","beat",t.shown);
     const d=el("div","turn "+t.side+(t.flagged?" flagged":""));
-    d.appendChild(el("span","cue",t.side==="rep"?"YOU":whoLabel(t.who)));
+    d.appendChild(el("span","cue",t.side==="rep"?"You":whoLabel(t.who)));
     const p=el("p","said"); p.textContent=t.text;
     if(t.cut) p.appendChild(el("span","cut"," ——"));
     d.appendChild(p);
@@ -656,16 +868,14 @@ import * as phone from "./phone.js";
     if(S.phase!=="live") { mouthBox=null; return; }
     const w=$("#stage"); w.textContent="";
     const c=el("div","call");
-    const slug=el("div","slug");
-    slug.textContent="INT. "+S.scen.firm.toUpperCase()+" — OUTBOUND · RESIST "+S.diff;
-    c.appendChild(slug);
+    c.appendChild(el("div","slug","Outbound call · "+S.scen.firm));
 
     S.turns.forEach((t)=>{ if(visible(t)) c.appendChild(turnNode(t)); });
 
     const m=el("div","mouth");
     if(NARROW.matches){ const pk=peekNodes(); if(pk.length){ const box=el("div","stagepeek"); pk.forEach(n=>box.appendChild(n)); m.appendChild(box); } }
     mouthBox=el("div","mouthbox idle");
-    mouthBox.appendChild(el("span","cue","YOU"));
+    mouthBox.appendChild(el("span","cue","You"));
     mouthLine=el("p","waiting","");
     mouthBox.appendChild(mouthLine);
     const vad=el("div","vad"); vadBar=el("i"); vad.appendChild(vadBar);
@@ -798,7 +1008,7 @@ import * as phone from "./phone.js";
       waits.push(phone.ring(1+(Math.random()<0.4?1:0),S.callCtl.signal).then(()=>{
         if(S.phase!=="live") return;
         S.ringing=false; if(S.sr&&S.sr.dirty) freshSession();
-        beat(S.scen.open==="dm"?"Line picks up.":"Line picks up. Front desk.");
+        beat("Connected.");
         paintState();
       }));
     }
@@ -877,7 +1087,7 @@ import * as phone from "./phone.js";
       let ev    = tag?tag[3].toLowerCase():"none";
       const pat = tag&&tag[4]!=null?Math.min(10,Math.max(0,parseInt(tag[4],10))):null;
       const obj = tag?slug(tag[5]):null;
-      if(ev==="booked"&&sayer!=="dm") ev="none";              // only the decision maker can book
+      if(ev==="booked"&&sayer!=="dm"&&!S.scen.gkBooks) ev="none";   // only a decision maker can book
       if(ev==="transferred"&&(sayer!=="gatekeeper"||!S.scen.gk)) ev="none";   // only the gatekeeper can transfer
       if(!tag&&/\[\[[^\]]*rep-ended/i.test(raw)) ev="rep-ended";
       if(pat===0&&ev==="none") ev="hangup";                   // out of patience means gone
@@ -913,26 +1123,37 @@ import * as phone from "./phone.js";
 
   /* ================= silent channel ================= */
   const KEYS=[
-    {k:"R",label:"Retry line",fn:retryLine},
-    {k:"B",label:"Cut in",fn:()=>{ if(!cutThemOff()) flash("Nobody’s talking."); }},
-    {k:"H",label:"Harder",fn:()=>nudge(1)},
-    {k:"E",label:"Easier",fn:()=>nudge(-1)},
-    {k:"F",label:"Flag",fn:flagLine},
-    {k:"M",label:"Mute mic",fn:toggleMic},
-    {k:"/",label:"Peek script",fn:peek},
-    {k:"T",label:"Read the room",fn:peekMood},
-    {k:"X",label:"Hang up",fn:()=>endCall("hungup"),danger:true}
+    {k:"M",label:"Mute",icon:"mic",fn:toggleMic},
+    {k:"K",label:"Keypad",icon:"keypad",fn:togglePad},
+    {k:"R",label:"Retry line",icon:"retry",fn:retryLine},
+    {k:"B",label:"Cut in",icon:"cut",fn:()=>{ if(!cutThemOff()) flash("Nobody’s talking."); }},
+    {k:"F",label:"Flag",icon:"flag",fn:flagLine},
+    {k:"/",label:"Script",icon:"script",fn:peek},
+    {k:"T",label:"Read room",icon:"room",fn:peekMood},
+    {k:"H",label:"Harder",icon:"up",fn:()=>nudge(1)},
+    {k:"E",label:"Easier",icon:"down",fn:()=>nudge(-1)},
+    {k:"X",label:"End call",icon:"hang",fn:()=>endCall("hungup"),danger:true}
   ];
   function renderKeys(){
     const w=$("#keys"); w.textContent="";
     KEYS.forEach((it)=>{
-      const b=el("button","key"+(it.danger?" danger":"")); b.type="button";
-      b.appendChild(el("kbd","",it.k)); b.appendChild(el("span","",it.label));
+      const b=el("button","ctrl"+(it.danger?" end":"")); b.type="button"; b.dataset.k=it.k;
+      b.title=it.label+" ("+it.k+")";
+      const i=el("i"); i.appendChild(icon(it.icon)); i.appendChild(el("kbd","",it.k));
+      b.appendChild(i); b.appendChild(el("span","",it.label));
       b.onmousedown=(ev)=>ev.preventDefault();          // never keep focus: the next keystroke is yours
       b.onclick=(ev)=>{ ev.preventDefault(); it.fn(); };
       w.appendChild(b);
     });
+    S.padOpen=false; paintPad();
     flash(HINT);
+  }
+  // in-call keypad: local tones only, the prospect never hears them
+  function togglePad(){ S.padOpen=!S.padOpen; paintPad(); }
+  function paintPad(){
+    const p=$("#pad"); p.textContent=""; p.hidden=!S.padOpen;
+    const kb=document.querySelector('.ctrl[data-k="K"]'); if(kb) kb.setAttribute("aria-pressed",String(S.padOpen));
+    if(S.padOpen) p.appendChild(keypadGrid(()=>{}));
   }
   const HINT="Silent — the line never hears these.";
   let hintT=null;
@@ -953,6 +1174,7 @@ import * as phone from "./phone.js";
       return;                                            // every other key is typing
     }
     if(e.target&&e.target.tagName==="BUTTON"&&(e.key===" "||e.key==="Enter")) return;
+    if(S.padOpen&&/^[0-9*#]$/.test(e.key)){ e.preventDefault(); phone.dtmf(e.key); return; }
     const k=e.key.toUpperCase();
     const hit=KEYS.find(it=>it.k===k||(it.k==="/"&&(e.key==="/"||e.key==="?")));
     if(hit){ e.preventDefault(); hit.fn(); }
@@ -1056,21 +1278,27 @@ import * as phone from "./phone.js";
   function renderEnd(){
     const w=$("#stage"); w.textContent="";
     const s=el("div","sheet");
-    s.appendChild(el("p","eyebrow",S.scen.firm+" · resist "+S.diff+" · "+fmt(elapsed())));
+    s.appendChild(el("p","eyebrow","Call summary · "+fmt(elapsed())+" · resistance "+S.diff));
+    s.appendChild(el("span","outcome "+(S.outcome==="booked"?"booked":S.outcome==="hangup"?"hangup":""),
+      S.outcome==="booked"?"Meeting booked":S.outcome==="hangup"?"They hung up":S.outcome==="wrapped"?"Follow-up only":"You ended the call"));
     s.appendChild(el("p","verdict",
       S.outcome==="booked"?"Thirty minutes on the calendar.":S.outcome==="hangup"?"They hung up on you."
       :S.outcome==="wrapped"?"You settled for a follow-up, not a meeting.":"You ended it."));
-    s.appendChild(el("p","sub","Reached step "+S.reached+" of 5"
+    s.appendChild(el("p","sub","Reached step "+S.reached+" of 5 ("+STEPS[S.reached-1].name+")"
       +(S.retries?" · "+S.retries+" retr"+(S.retries>1?"ies":"y"):"")
       +(S.peeks?" · "+S.peeks+" peek"+(S.peeks>1?"s":""):"")+"."));
 
     const acts=el("div","acts");
     const grade=el("button","go","Grade this call"); grade.type="button";
     grade.onclick=()=>getTeardown(grade);
-    const again=el("button","ghostbtn","Dial again"); again.type="button";
-    again.onclick=()=>{ S.phase="setup"; $("#clock").textContent="0:00"; renderSetup(); renderRail(); };
+    const again=el("button","ghostbtn"); again.type="button"; again.append(icon("phone"),el("span","","Call again"));
+    again.onclick=()=>{ S.phase="setup"; startCall(); };
+    const next=el("button","ghostbtn"); next.type="button"; next.append(icon("next"),el("span","","Next contact"));
+    next.onclick=()=>{ S.phase="setup"; selectContact(pickNext()); };
+    const done=el("button","ghostbtn","Done"); done.type="button";
+    done.onclick=()=>{ S.phase="setup"; renderSetup(); renderRail(); };
     if(!S.teardown) acts.appendChild(grade);
-    acts.appendChild(again); s.appendChild(acts);
+    acts.append(again,next,done); s.appendChild(acts);
 
     const hold=el("div"); hold.id="tdown"; s.appendChild(hold);
     if(S.teardown) paintTeardown(S.teardown,hold);
@@ -1195,7 +1423,7 @@ import * as phone from "./phone.js";
   }
   function logRecord(r){
     if(!S.callAt) S.callAt=new Date().toISOString();
-    return {id:S.lastId,at:S.callAt,firm:S.scen.firm,diff:S.diff,reached:S.reached,
+    return {id:S.lastId,at:S.callAt,sid:S.scen.id,firm:S.scen.firm,diff:S.diff,reached:S.reached,
       outcome:S.outcome||"hungup",seconds:elapsed(),peeks:S.peeks,retries:S.retries,
       grade:avgGrade(r)||"",fix:r&&r.fix?String(r.fix):""};
   }
@@ -1218,6 +1446,39 @@ import * as phone from "./phone.js";
 
   function renderRail(){
     const w=$("#rail"); w.textContent="";
+
+    if(S.phase==="live"){
+      const s0=el("section");
+      s0.appendChild(el("p","rtitle","Call stage"));
+      const sl=el("div","steps");
+      STEPS.forEach((st)=>{
+        const d=el("div","stp"+(st.n===S.step?" now":st.n<S.reached||st.n<S.step?" done":""));
+        d.appendChild(el("i","",st.n<S.step?"✓":String(st.n)));
+        d.appendChild(el("span","",st.name+" — "+st.goal));
+        sl.appendChild(d);
+      });
+      s0.appendChild(sl);
+      const stp=STEPS[S.step-1];
+      const cl=el("div","checks");
+      stp.rules.forEach((r)=>{
+        const d=el("div","chk"); d.appendChild(el("i","","•")); d.appendChild(el("span","",r)); cl.appendChild(d);
+      });
+      s0.appendChild(cl);
+      peekNodes().forEach(n=>s0.appendChild(n));
+      w.appendChild(s0);
+    }
+
+    if(S.phase==="live"){
+      const sc=S.scen, s4=el("section");
+      s4.appendChild(el("p","rtitle","Contact"));
+      const b=el("div","brief");
+      const nm=el("span"); nm.appendChild(el("b","",sc.dm)); b.appendChild(nm);
+      b.appendChild(el("span","",sc.firm+" · "+sc.city));
+      b.appendChild(el("span","",sc.years?sc.years+" years in business":"Years in business unknown"));
+      b.appendChild(el("span","",(sc.services||[]).join(" · ")));
+      s4.appendChild(b);
+      w.appendChild(s4);
+    }
 
     const s1=el("section");
     s1.appendChild(el("p","rtitle","Today"));
@@ -1244,38 +1505,20 @@ import * as phone from "./phone.js";
     t2.appendChild(f2); t2.appendChild(tk); m2.appendChild(t2); s1.appendChild(m2);
     w.appendChild(s1);
 
-    if(S.phase==="live"){
-      const stp=STEPS[S.step-1]; const s2=el("section");
-      s2.appendChild(el("p","rtitle","Step "+stp.n+" · "+stp.goal));
+    if(S.phase!=="live"){
+      const s5=el("section");
+      s5.appendChild(el("p","rtitle","On a call"));
       const cl=el("div","checks");
-      stp.rules.forEach((r)=>{
-        const d=el("div","chk"); d.appendChild(el("i","","—")); d.appendChild(el("span","",r)); cl.appendChild(d);
+      ["Just talk — they answer when you pause.","Start talking to cut them off mid-sentence.","Silent keys: R retry · B cut in · F flag · / script · T read the room · H/E harder/easier · X end.","Nobody on the line hears the keys."].forEach((r)=>{
+        const d=el("div","chk"); d.appendChild(el("i","","•")); d.appendChild(el("span","",r)); cl.appendChild(d);
       });
-      s2.appendChild(cl);
-      peekNodes().forEach(n=>s2.appendChild(n));
-      w.appendChild(s2);
+      s5.appendChild(cl); w.appendChild(s5);
     }
-
-    const s3=el("section");
-    s3.appendChild(el("p","rtitle","Call log"));
-    if(!S.calls.length) s3.appendChild(el("p","empty","No calls logged yet."));
-    else{
-      const box=el("div","log");
-      S.calls.slice(0,14).forEach((c)=>{
-        const r=el("div","logrow");
-        const g=String(c.grade||"·").toUpperCase();
-        r.appendChild(el("span","g "+g,g));
-        r.appendChild(el("span","",first(c.firm)));
-        r.appendChild(el("span","w",(c.outcome==="booked"?"booked":c.outcome==="hangup"?"hung up · step "+(c.reached||1):c.outcome==="wrapped"?"follow-up · step "+(c.reached||1):"step "+(c.reached||1))+" · "+String(c.at||"").slice(5,10)));
-        box.appendChild(r);
-      });
-      s3.appendChild(box);
-    }
-    w.appendChild(s3);
+    if(S.view==="recents") renderSide();
   }
 
   /* ================= boot ================= */
-  renderSetup(); renderRail(); paintBoard();
+  renderSide(); renderSetup(); renderRail(); paintBoard();
 
   (async function(){
     try{

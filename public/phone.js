@@ -76,6 +76,14 @@ export function disconnected(){
   [0.35, 0.65, 0.95].forEach((dt)=>tone([480, 620], t + dt, 0.18, 0.05));
 }
 
+// Keypad tones (DTMF), local only: nothing is sent down the line.
+const DTMF = { "1":[697,1209],"2":[697,1336],"3":[697,1477],"4":[770,1209],"5":[770,1336],"6":[770,1477],
+  "7":[852,1209],"8":[852,1336],"9":[852,1477],"*":[941,1209],"0":[941,1336],"#":[941,1477] };
+export function dtmf(key){
+  const f = DTMF[key];
+  if(f && unlock()) tone(f, ctx.currentTime + 0.01, 0.14, 0.05);
+}
+
 // You hung up: just the click.
 export function hangup(){ if(unlock()) click(ctx.currentTime + 0.01, 0.3); }
 

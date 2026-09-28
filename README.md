@@ -10,6 +10,8 @@ cp .env.example .env        # then put your key in ANTHROPIC_API_KEY
 npm start                   # http://localhost:3000
 ```
 
+The app is laid out like a business softphone (Dialpad-style): a **Contacts** list of 24 practices (8 chiropractic, 8 med spa, 8 acupuncture), **Recents** with each call's outcome and grade, and a **Keypad** where you can dial a contact's number or power-dial a random one. A contact card shows only what a real list gives you: the contact's name, the practice, phone, city, years in business (when known) and services. Who answers, and who really decides, you find out on the call: solo owners who pick up between patients, receptionists who route you ("Which doctor?"), associates, spouses who run the office, office managers who are key influencers, and office managers who can take and book the meeting themselves.
+
 Open it in **Chrome or Edge** (they have built-in speech recognition), allow the microphone, and press **Dial**. Headphones help, so the mic doesn't pick up the prospect. Other browsers still work, but you type your lines instead of speaking them. Browsers only allow the microphone on `localhost` or over HTTPS, so put a deployed copy behind HTTPS.
 
 | Variable | Needed | What it does |
@@ -36,7 +38,7 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 - **Transfers are real.** When the gatekeeper puts you through you get a hold ring, and then the decision maker picks up and speaks first.
 - **You end on a grade.** Each step you reached gets a letter grade, plus a verdict, the one fix for next call, your worst line against the line you should have said, and a note on delivery.
 
-Keys are a silent channel (the line never hears them): **R** retry your last line · **B** cut in · **H/E** harder/easier · **F** flag a line for the teardown · **M** mute mic · **/** peek at the script · **T** read the room · **X** hang up. While you're typing in the text box every key is text; press **Esc** to leave the box and use the keys.
+The call controls work by click or key, and are a silent channel (the line never hears them): **M** mute · **K** keypad (local tones only) · **R** retry your last line · **B** cut in · **F** flag a line for the teardown · **/** peek at the script · **T** read the room · **H/E** harder/easier · **X** end call. While you're typing in the text box every key is text; press **Esc** to leave the box and use the keys.
 
 ## Testing
 
@@ -51,6 +53,7 @@ The end-to-end run starts stand-in APIs (`tests/e2e/mock-apis.mjs`) and a script
 
 - `server.js`: entry point; starts the server.
 - `src/app.js`: the Express app. `/api/prospect` streams the prospect's reply (NDJSON), `/api/grade` returns a structured teardown, `/api/tts` proxies ElevenLabs, `/api/calls` stores the call log in `data/calls.json`.
-- `public/framework.js`: the five steps, the scenarios and personas, and every prompt. The browser and the server both import it.
-- `public/app.js`: the call loop, covering speech recognition, turn-taking, delivery measurement, dead air, playback and the teardown.
+- `public/prospects.js`: the prospect pool. Each practice's public contact card, private setup (who answers, whether an office manager can book), voices and persona text.
+- `public/framework.js`: the five steps, the prospect rules and every prompt. The browser and the server both import it.
+- `public/app.js`: the softphone UI (contacts, recents, keypad, contact card, call controls) and the call loop: speech recognition, turn-taking, delivery measurement, dead air, playback and the teardown.
 - `public/phone.js`: synthesized phone audio (ringback, clicks, disconnect tone) and the handset filter.

@@ -56,3 +56,31 @@ test("missing patience never becomes 0", () => {
   assert.doesNotMatch(gradePrompt({ sc: SCENARIOS[0], diff: 3, outcome: "hangup", reached: 1,
     turns: cleanTurns([{ side: "them", text: "Hm.", patience: null }]) }), /patience 0/);
 });
+
+test("the prospect pool: public contact card fields, unique numbers, sound persona text", async () => {
+  const PROSPECTS = (await import("../public/prospects.js")).default;
+  assert.ok(PROSPECTS.length >= 24);
+  for (const v of ["Chiropractic", "Med spa", "Acupuncture"]) assert.ok(PROSPECTS.filter((p) => p.vertical === v).length >= 8, v);
+  assert.equal(new Set(PROSPECTS.map((p) => p.id)).size, PROSPECTS.length, "ids are unique");
+  assert.equal(new Set(PROSPECTS.map((p) => p.phone.slice(-4))).size, PROSPECTS.length, "keypad can dial by last four digits");
+  for (const p of PROSPECTS) {
+    for (const k of ["firm", "city", "phone", "detail", "dm", "dmRole", "dmVoiceId"]) assert.ok(p[k], `${p.id}.${k}`);
+    assert.match(p.phone, /^\(\d{3}\) 555-01\d{2}$/, `${p.id} uses a fictional number`);
+    assert.ok(p.years === null || Number.isInteger(p.years), `${p.id}.years`);
+    assert.ok(Array.isArray(p.services) && p.services.length >= 3, `${p.id}.services`);
+    assert.ok(p.open === "dm" ? !p.gk : p.gk && p.gkVoiceId, `${p.id} who answers`);
+    const text = p.persona.join("\n");
+    assert.equal(p.persona.filter((l) => /^(Hook|Pitch|Close): /.test(l)).length, 3, `${p.id} objection lines`);
+    if (p.gkBooks) assert.match(text, /^Authority: /m, `${p.id} says when the office manager decides`);
+  }
+});
+
+test("an office manager with authority can run the call and book; a receptionist can't", () => {
+  const books = SCENARIOS.find((s) => s.gkBooks), screens = SCENARIOS.find((s) => s.gk && !s.gkBooks);
+  assert.ok(books && screens);
+  const a = prospectSystem(books, 3, "gatekeeper", "x"), b = prospectSystem(screens, 3, "gatekeeper", "x");
+  assert.match(a, new RegExp(books.gk + " can book vendor meetings"));
+  assert.match(a, new RegExp("step: 1 until .* or " + books.gk + " starts hearing the caller out"));
+  assert.match(b, /You never book/);
+  assert.match(b, new RegExp(screens.city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});

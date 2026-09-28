@@ -6,35 +6,44 @@
 <title>The Dial Room</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div id="app">
-  <header class="board">
-    <span class="mark">The Dial Room</span>
-    <span class="clock" id="clock">0:00</span>
-    <span class="notch" id="notchBox" hidden>Resist <b id="notch">3</b></span>
-    <nav class="ladder" id="ladder" aria-label="Call stage"></nav>
-  </header>
+<div id="app" data-pane="list">
+  <nav class="nav" id="nav" aria-label="Main"></nav>
 
-  <main>
+  <aside class="side" id="side"></aside>
+
+  <main class="main">
+    <header class="callhead" id="callhead" hidden>
+      <div class="headrow">
+        <span class="av" id="headAv"></span>
+        <div class="headwho"><b id="headName"></b><span id="headSub"></span></div>
+        <span class="notch" id="notchBox" hidden>Resist <b id="notch">3</b></span>
+        <span class="clock" id="clock">0:00</span>
+      </div>
+      <nav class="ladder" id="ladder" aria-label="Call stage"></nav>
+    </header>
+
     <section class="stage" id="stage"></section>
-    <aside id="rail"></aside>
+
+    <footer class="bar" id="bar" hidden>
+      <div class="state">
+        <span class="orb off" id="orb"></span>
+        <span class="stateTxt" id="stateTxt">Off hook</span>
+        <span class="hint" id="hint"></span>
+      </div>
+      <div class="fallback" id="fallback" hidden>
+        <input id="say" placeholder="Type your line, Enter to send · Esc for shortcut keys" autocomplete="off" spellcheck="false">
+        <button class="send" id="sendBtn" type="button">Send</button>
+      </div>
+      <div class="pad" id="pad" hidden></div>
+      <div class="keys" id="keys"></div>
+    </footer>
   </main>
 
-  <footer class="bar" id="bar" hidden>
-    <div class="state">
-      <span class="orb off" id="orb"></span>
-      <span class="stateTxt" id="stateTxt">Off hook</span>
-      <span class="hint" id="hint"></span>
-    </div>
-    <div class="fallback" id="fallback" hidden>
-      <input id="say" placeholder="Type your line, Enter to send · Esc for shortcut keys" autocomplete="off" spellcheck="false">
-      <button class="send" id="sendBtn" type="button">Send</button>
-    </div>
-    <div class="keys" id="keys"></div>
-  </footer>
+  <aside id="rail"></aside>
 </div>
 
 <script type="module" src="app.js"></script>
