@@ -253,7 +253,37 @@ import * as phone from "./phone.js";
       r.appendChild(end);
       r.onclick=()=>{ if(sc) selectContact(sc); };
       list.appendChild(r);
+      if(c.turns&&c.turns.length){
+        const tb=el("button","ghostbtn small","Transcript"); tb.type="button";
+        tb.onclick=(ev)=>{ ev.stopPropagation(); showTranscript(c,sc); };
+        r.appendChild(tb);
+      }
     });
+  }
+
+  // a past call, as it was heard
+  function showTranscript(c,sc){
+    if(S.phase==="live"){ flash("Finish this call first."); return; }
+    S.phase="setup"; S.pane="main"; if(sc) S.scen=sc;
+    const w=$("#stage"); w.textContent="";
+    const box=el("div","sheet");
+    const back=el("button","backlink"); back.type="button"; back.append(icon("back"),el("span","","Recents"));
+    back.onclick=()=>{ S.pane="list"; renderSetup(); };
+    box.appendChild(back);
+    box.appendChild(el("p","eyebrow",(sc?sc.dm+" · "+sc.firm:c.firm)+" · "+whenText(c.at)+" · resistance "+c.diff+" · "+fmt(c.seconds||0)));
+    box.appendChild(el("p","verdict",outcomeText(c)));
+    if(c.fix) box.appendChild(el("p","sub","Next call: "+c.fix));
+    const call=el("div","call");
+    c.turns.forEach((t)=>{
+      if(t.side==="beat"){ call.appendChild(el("div","beat",t.text)); return; }
+      const d=el("div","turn "+t.side);
+      d.appendChild(el("span","cue",t.side==="rep"?"You":(t.who==="dm"?(sc?sc.dm:"Decision maker"):(sc&&sc.gk?sc.gk:"Front desk"))));
+      d.appendChild(el("p","said",t.text));
+      if(t.side==="them"&&t.patience!=null) d.appendChild(el("span","meta","patience "+t.patience+"/10"+(t.objection&&t.objection!=="none"?" · "+t.objection.replace(/-/g," "):"")));
+      call.appendChild(d);
+    });
+    box.appendChild(call);
+    w.appendChild(box); paintBoard(); paintState();
   }
 
   const PADKEYS=[["1",""],["2","ABC"],["3","DEF"],["4","GHI"],["5","JKL"],["6","MNO"],["7","PQRS"],["8","TUV"],["9","WXYZ"],["*",""],["0","+"],["#",""]];
@@ -1425,7 +1455,8 @@ import * as phone from "./phone.js";
     if(!S.callAt) S.callAt=new Date().toISOString();
     return {id:S.lastId,at:S.callAt,sid:S.scen.id,firm:S.scen.firm,diff:S.diff,reached:S.reached,
       outcome:S.outcome||"hungup",seconds:elapsed(),peeks:S.peeks,retries:S.retries,
-      grade:avgGrade(r)||"",fix:r&&r.fix?String(r.fix):""};
+      grade:avgGrade(r)||"",fix:r&&r.fix?String(r.fix):"",turns:S.turns.filter(visible).map(t=>({side:t.side==="rep"||t.side==="them"?t.side:"beat",
+        who:t.who||"",text:t.side==="note"?t.shown:t.text+(t.cut?" —":""),patience:t.patience??null,objection:t.objection||null}))};
   }
   function saveLog(rec){
     const i=S.calls.findIndex(c=>c.id===rec.id);

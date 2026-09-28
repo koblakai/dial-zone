@@ -361,6 +361,14 @@ app.put("/api/calls/:id", async (req, res) => {
     retries: Math.max(0, parseInt(b.retries, 10) || 0),
     grade: /^[ABCDF]$/.test(b.grade) ? b.grade : "",
     fix: clean(b.fix).slice(0, 300),
+    // the conversation itself, so a call can be reviewed later (kept short)
+    turns: Array.isArray(b.turns) ? b.turns.slice(-80).map((t) => ({
+      side: ["rep", "them", "beat"].includes(t?.side) ? t.side : "beat",
+      who: t?.who === "dm" ? "dm" : t?.who === "gatekeeper" ? "gatekeeper" : "",
+      text: clean(t?.text).slice(0, 600),
+      patience: t?.side === "them" ? num(t.patience, 0, 10) : null,
+      objection: t?.side === "them" ? slug(t?.objection) : null,
+    })).filter((t) => t.text) : [],
   };
   const calls = await loadCalls();
   calls[id] = rec;

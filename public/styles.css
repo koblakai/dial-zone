@@ -100,6 +100,8 @@ svg{display:block}
 .ghostbtn svg{width:16px;height:16px}
 .ghostbtn:hover{border-color:var(--dim)}
 .ghostbtn:disabled{opacity:.5;cursor:default}
+.ghostbtn.small{padding:4px 10px;font-size:11.5px}
+.row .ghostbtn.small{margin-left:4px}
 .card{background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);padding:16px 18px;display:flex;flex-direction:column;gap:12px}
 .card>.ghostbtn{align-self:flex-start}
 .card h3{margin:0;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
