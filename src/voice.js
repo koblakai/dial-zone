@@ -107,7 +107,8 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   /* ---------- routes the browser calls (behind the app password) ---------- */
   const api = express.Router();
 
-  api.get("/status", (_req, res) => res.json({ enabled, reasons, store: STORE_KIND, tts: ttsModel }));
+  const status = () => ({ enabled, reasons, store: STORE_KIND, tts: ttsModel });
+  api.get("/status", (_req, res) => res.json(status()));
 
   // Start (or, on a transfer, continue) a call: returns the session token and per-call overrides.
   api.post("/session", limit(30), async (req, res) => {
@@ -281,5 +282,5 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   for (const p of ["/llm/:secret", "/llm/:secret/chat/completions", "/llm/:secret/v1/chat/completions"]) llm.post(p, limit(120), handleTurn);
   llm.get("/llm/:secret/models", (req, res) => { if (req.params.secret !== secret) return res.status(404).end(); res.json({ object: "list", data: [{ id: "dialroom", object: "model" }] }); });
 
-  return { api, llm, enabled, reasons, ttsModel };
+  return { api, llm, enabled, reasons, ttsModel, status };
 }
