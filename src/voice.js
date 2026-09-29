@@ -181,6 +181,14 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
     const body = req.body || {};
     const callId = body.dialroom?.callId || body.custom_llm_extra_body?.dialroom?.callId || body.extra_body?.dialroom?.callId || "";
     let state = callId ? await loadState(String(callId).slice(0, 40)) : null;
+    if (!state || process.env.LOG_VOICE) {
+      // What ElevenLabs actually sends (shape only, no transcript): the one thing the docs never showed us.
+      const shape = { keys: Object.keys(body), callId: callId || null, found: !!state, store: STORE_KIND,
+        tools: Array.isArray(body.tools) ? body.tools.map((t) => t?.function?.name || t?.name || t?.type) : undefined,
+        extra: body.custom_llm_extra_body ?? body.extra_body ?? null, dyn: body.dynamic_variables ?? null,
+        messages: (body.messages || []).map((m) => m.role + ":" + textOf(m.content).slice(0, 40).replace(/\n/g, " ")) };
+      console.log("voice llm request", JSON.stringify(shape).slice(0, 1500));
+    }
     if (!state) return res.status(400).json({ error: { message: "unknown call" } });
     const sc = findScenario(state.scenarioId);
     if (!sc) return res.status(400).json({ error: { message: "unknown scenario" } });
