@@ -1,7 +1,7 @@
 import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET, findScenario } from "./framework.js";
 import * as phone from "./phone.js";
 
-  const SILENCE_MS=800;               // end-of-turn after this much quiet…
+  const SILENCE_MS=900;               // end-of-turn after this much quiet…
   const SILENCE_PITCH_MS=1000;        // …a little more once you're pitching or qualifying (longer thoughts)
   const TRAILING_MS=1800;             // …or this much if you trailed off mid-thought ("so, um…")
   const ECHO_TAIL_MS=1800;            // speech-to-text finalizes late: keep checking for their voice this long
@@ -10,6 +10,7 @@ import * as phone from "./phone.js";
   const SPEC_MS=250;                  // start thinking this early; only speak once the turn is really over
   const DEAD_AIR_MS=6000;             // prospect reacts to this much silence from you
   const DEAD_AIR_TYPED_MS=20000;      // …more slack when you're typing
+  const FINAL_WAIT_MS=900;            // give speech-to-text this long to finalize (its first guess is rough)
   const FILLER_MS=600;                // no first word yet this long after your turn: a spoken "Mm-hm."
   const IS_ANDROID=/Android/i.test(navigator.userAgent);
   const NARROW=window.matchMedia("(max-width:860px)");
@@ -524,7 +525,7 @@ import * as phone from "./phone.js";
   }
 
   /* --- echo rejection: is what we just heard actually the prospect's own voice? --- */
-  function norm(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9' ]/g," ").replace(/\s+/g," ").trim(); }
+  function norm(s){ return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9' ]/g," ").replace(/\s+/g," ").trim(); }
   const STOP=new Set("the and you your for this that with are was our not but what who how can has have just its it's i'm you're we're they're okay yeah yes sure well about from them they she her his him".split(" "));
   function isEcho(text,seenAt){
     if(!S.audible){
@@ -535,10 +536,57 @@ import * as phone from "./phone.js";
     if(!heard||src.size<=1) return false;
     let hw=heard.split(" ").filter(w=>w.length>2&&!STOP.has(w));
     if(!hw.length) hw=heard.split(" ").filter(w=>w.length>2);   // "Who are you with?" is all stopwords
-    if(!hw.length) return true;                       // a grunt while, or just after, they talk: drop it
+    if(!hw.length) return heard.split(" ").every(w=>src.has(w)||/^(m+h*m*|h+m+|u+h+|u+m+|a+h+|mhm|hmm+|er+)$/.test(w));   // their words or a grunt: drop; "No." stays
     let hit=0; hw.forEach(w=>{ if(src.has(w)) hit++; });
     return (hit/hw.length) >= 0.6;                     // mostly their words coming back
   }
+
+  /* --- proper nouns: the recognizer has never heard of Dr. Oyelaran or Levitate --- */
+  let vocabFor=null, vocab=[];
+  function buildVocab(){
+    const sc=S.scen; if(vocabFor===sc.id) return; vocabFor=sc.id; vocab=[];
+    const add=(term)=>{ const n=norm(term); if(n.replace(/ /g,"").length>=4&&!vocab.some(v=>v.n===n)) vocab.push({term,n,words:n.split(" ").length}); };
+    ["Levitate","love it","lev it ate","leviate","levi tate","elevate","levitates","levitate's"].forEach(a=>vocab.push({term:"Levitate",n:norm(a),words:norm(a).split(" ").length,alias:true}));
+    const dm=String(sc.dm).replace(/^Dr\.?\s+/,"");
+    add(dm); dm.split(" ").forEach(add); add("Dr. "+dm.split(" ").pop());
+    if(sc.gk) add(sc.gk);
+    add(sc.firm.replace(/&/g,"and")); sc.firm.replace(/&/g,"and").split(/\s+/).forEach(add);
+    vocab.sort((a,b)=>b.words-a.words||b.n.length-a.n.length);
+  }
+  function lev(a,b){
+    const m=a.length,n=b.length; if(!m||!n) return Math.max(m,n);
+    let prev=Array.from({length:n+1},(_,j)=>j), cur=new Array(n+1);
+    for(let i=1;i<=m;i++){ cur[0]=i; for(let j=1;j<=n;j++){ cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1)); } [prev,cur]=[cur,prev]; }
+    return prev[n];
+  }
+  const SKIP=new Set(["the","and","for","with","from","about","that","this","spine","family","clinic","center","group","medical","health","wellness","integrative","aesthetics","acupuncture","chiropractic"]);
+  function polish(text){
+    if(!text) return text; buildVocab();
+    const toks=text.split(/\s+/); const out=[];
+    for(let i=0;i<toks.length;){
+      let hit=null;
+      for(const v of vocab){
+        if(SKIP.has(v.n)) continue;
+        const spans = v.words>1 ? [v.words, v.words-1] : [1, 2];
+        for(const span of spans){
+          if(i+span>toks.length) continue;
+          const raw=toks.slice(i,i+span).join(" "), cand=norm(raw).replace(/ /g,""), target=v.n.replace(/ /g,"");
+          if(cand.length<4) continue;
+          const tail=/[.,!?]$/.test(raw)?raw.slice(-1):"";
+          if(v.alias||cand===target){ if(cand===target){ hit={span,text:v.term+tail}; break; } continue; }
+          // short words are too easy to confuse with real ones ("cold" is not "Cole"): exact only
+          if(target.length<6||Math.abs(cand.length-target.length)>Math.max(2,target.length*0.3)) continue;
+          const d=lev(cand,target);
+          if(d<=Math.max(1,Math.floor(target.length*0.25))){ hit={span,text:v.term+tail}; break; }
+        }
+        if(hit) break;
+      }
+      if(hit){ out.push(hit.text); i+=hit.span; } else { out.push(toks[i]); i++; }
+    }
+    return out.join(" ");
+  }
+
+  window.__polish=polish;                            // for tests
 
   /* --- how you sound: latency, fillers, restarts, pauses, pace --- */
   const FILLER=/\b(u+m+|u+h+|uhm|erm|er+|ah+|hmm+|mm+|you know|i mean|kind of|sort of|like,|basically)\b/gi;
@@ -601,8 +649,13 @@ import * as phone from "./phone.js";
     });
     S.heard=S.heardSegs.join(" ");
     S.interim=inter;
-    const sofar=(S.heard+" "+S.interim).trim();
+    const sofar=polish((S.heard+" "+S.interim).trim());
     if(S.spec&&norm(sofar)!==norm(S.spec.text)) cancelSpec();   // you kept going
+    if(S.finalWait&&!inter){                        // the final we were holding for: go now
+      S.finalWait=false; clearTimeout(S.vadTimer); clearTimeout(specTimer); specTimer=null;
+      updateMouth(); endOfTurn(true); return;
+    }
+    S.finalWait=false;
     const base=S.step>=3?SILENCE_PITCH_MS:SILENCE_MS;
     S.eotMs=TRAILING.test(sofar.replace(/[.,!?…\s]+$/,""))?TRAILING_MS:base;
     updateMouth();
@@ -614,7 +667,7 @@ import * as phone from "./phone.js";
   // Take what you've said so far off the recognizer, and remember it was used
   // so a late final for the same words isn't heard twice.
   function consumeUtterance(){
-    const text=(S.heard+" "+S.interim).trim(), tm=S.tm, sr=S.sr;
+    const text=polish((S.heard+" "+S.interim).trim()), tm=S.tm, sr=S.sr;
     const unfinished=!!S.interim;
     if(sr) sr.skip=sr.len;
     S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null;
@@ -628,7 +681,7 @@ import * as phone from "./phone.js";
   function startSpec(){
     specTimer=null;
     if(S.phase!=="live"||S.spec||S.busy||S.hold||S.ringing||S.speaking||!S.tm) return;
-    const text=(S.heard+" "+S.interim).trim(); if(!text) return;
+    const text=polish((S.heard+" "+S.interim).trim()); if(!text) return;
     flushNotes();
     let release; const gate=new Promise(r=>{ release=r; });
     const turn={side:"rep",text,meta:measure(text,S.tm),pending:true};
@@ -653,7 +706,15 @@ import * as phone from "./phone.js";
     return true;
   }
 
-  function endOfTurn(){
+  function endOfTurn(force){
+    // Words still interim are the recognizer's first guess; its final pass fixes names and
+    // word boundaries. Hold the turn briefly for that (the reply is already being generated).
+    if(!force&&S.interim.trim()&&!S.finalWait){
+      S.finalWait=true; clearTimeout(S.vadTimer);
+      S.vadTimer=setTimeout(()=>endOfTurn(true),FINAL_WAIT_MS);
+      return;
+    }
+    S.finalWait=false;
     const {text,tm}=consumeUtterance();
     if(!text||S.phase!=="live"){ cancelSpec(); updateMouth(); return; }
     if(commitSpec(text)){ updateMouth(); return; }
@@ -951,7 +1012,7 @@ import * as phone from "./phone.js";
   /* the only thing that repaints while you are mid-sentence */
   function updateMouth(){
     if(!mouthBox||S.phase!=="live") return;
-    const live=(S.heard+" "+S.interim).trim();
+    const live=polish((S.heard+" "+S.interim).trim());
     mouthBox.className="mouthbox"+(live?"":" idle");
     if(live){ mouthLine.className="said"; mouthLine.textContent=live; }
     else{
