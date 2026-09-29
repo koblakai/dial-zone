@@ -55,7 +55,14 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
             custom_llm: { url: llmUrl, model_id: "dialroom", api_type: "chat_completions" },
             temperature: null,
             tools: [{ type: "client", name: "dialroom_state", description: "Reports the call's state to the app after each reply. The app calls it; never mention it.",
-              expects_response: false, parameters: { type: "object", properties: { who: { type: "string" }, step: { type: "integer" }, event: { type: "string" }, patience: { type: "integer" }, objection: { type: "string" } }, required: [] } }],
+              // ElevenLabs rejects a tool parameter that has no description.
+              expects_response: false, parameters: { type: "object", description: "The call's state after this reply.", required: [], properties: {
+                who: { type: "string", description: "Who speaks next: gatekeeper or dm." },
+                step: { type: "integer", description: "The rep's current stage, 1-5." },
+                event: { type: "string", description: "none, transferred, booked or hangup." },
+                patience: { type: "integer", description: "The prospect's remaining patience." },
+                objection: { type: "string", description: "The objection just raised, if any." },
+              } } }],
           },
         },
         tts: { model_id: ttsModel, voice_id: SCENARIOS[0].gkVoiceId || SCENARIOS[0].dmVoiceId, stability: 0.5, similarity_boost: 0.8, speed: 1.0 },
