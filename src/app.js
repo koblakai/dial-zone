@@ -48,6 +48,8 @@ app.set("trust proxy", process.env.TRUST_PROXY || (ON_VERCEL ? true : "loopback"
 // URL rather than the app password. Registered first so the password check below never sees it.
 let voice = null;
 app.use("/api/voice", express.json({ limit: "1mb" }), (req, res, next) => (voice ? voice.llm(req, res, next) : next()));
+// Whether live voice is on, and why not: no secrets in it, so it needs no password (handy for checking a deployment).
+app.get("/api/voice/status", (req, res, next) => (voice ? voice.api(req, res, next) : next()));
 
 // Optional shared password (HTTP Basic auth) so a deployed copy isn't an open door to your API keys.
 if (APP_PASSWORD) {
