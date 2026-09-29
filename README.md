@@ -20,6 +20,7 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 | `ELEVENLABS_API_KEY` | no | Realistic studio voices for the prospect. Without it the browser's built-in voices are used. |
 | `PROSPECT_MODEL` / `GRADER_MODEL` | no | Default `claude-opus-5-5`. A faster model (e.g. `claude-sonnet-5-5`) cuts response time. |
 | `PROSPECT_EFFORT` / `GRADER_EFFORT` | no | Defaults `low` (snappy replies) and `high` (a careful teardown). |
+| `PROSPECT_THINKING` | no | `off` turns the prospect's thinking off for the fastest first word; only works with `PROSPECT_MODEL=claude-sonnet-5-5`. |
 | `ELEVENLABS_MODEL` | no | Default `eleven_turbo_v2_5`. `eleven_flash_v2_5` is faster and rougher; `eleven_multilingual_v2` smoother and slower. |
 | `APP_PASSWORD` | no | Require a password (any username) to open the app. Setting it also makes the server listen on all interfaces so others can reach it. |
 | `HOST` | no | Interface to listen on. Default `127.0.0.1` (this machine only) unless `APP_PASSWORD` is set. |

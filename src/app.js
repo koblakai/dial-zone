@@ -23,6 +23,8 @@ const PROSPECT_MODEL = process.env.PROSPECT_MODEL || "claude-opus-5-5";
 const GRADER_MODEL = process.env.GRADER_MODEL || "claude-opus-5-5";
 const GRADER_EFFORT = process.env.GRADER_EFFORT || "high";        // the teardown is not real-time: depth over speed
 const PROSPECT_EFFORT = process.env.PROSPECT_EFFORT || "low";   // spoken replies: speed over depth
+// PROSPECT_THINKING=off is the fastest first word, and only Claude Sonnet 5.5 accepts it.
+const PROSPECT_THINKING = process.env.PROSPECT_THINKING === "off" && PROSPECT_MODEL === "claude-sonnet-5-5" ? { thinking: { type: "between_tools" } } : {};
 // Vercel's filesystem is read-only except /tmp (so the hosted call log is per-instance and temporary)
 const DATA_FILE = path.resolve(ROOT, process.env.DATA_FILE || (ON_VERCEL ? "/tmp/calls.json" : "data/calls.json"));
 export const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
@@ -179,6 +181,7 @@ app.post("/api/prospect", limit(60), async (req, res) => {
     model: PROSPECT_MODEL,
     max_tokens: 4000,
     output_config: { effort: PROSPECT_EFFORT },
+    ...PROSPECT_THINKING,
     system: prospectSystem(sc, clampDiff(req.body?.diff), who, clean(req.body?.seed).slice(0, 40)),
     messages,
     cache_control: { type: "ephemeral" },

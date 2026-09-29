@@ -1,15 +1,16 @@
 import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET, findScenario } from "./framework.js";
 import * as phone from "./phone.js";
 
-  const SILENCE_MS=1000;              // end-of-turn after this much quiet…
-  const SILENCE_PITCH_MS=1300;        // …a little more once you're pitching or qualifying (longer thoughts)
-  const TRAILING_MS=2200;             // …or this much if you trailed off mid-thought ("so, um…")
+  const SILENCE_MS=800;               // end-of-turn after this much quiet…
+  const SILENCE_PITCH_MS=1000;        // …a little more once you're pitching or qualifying (longer thoughts)
+  const TRAILING_MS=1800;             // …or this much if you trailed off mid-thought ("so, um…")
   const ECHO_TAIL_MS=1800;            // speech-to-text finalizes late: keep checking for their voice this long
   const SR_LAG_MS=300;                // speech-to-text reports words roughly this late
   const PAUSE_MS=700;                 // a gap this long between words counts as a pause
-  const SPEC_MS=400;                  // start thinking this early; only speak once the turn is really over
+  const SPEC_MS=250;                  // start thinking this early; only speak once the turn is really over
   const DEAD_AIR_MS=6000;             // prospect reacts to this much silence from you
   const DEAD_AIR_TYPED_MS=20000;      // …more slack when you're typing
+  const FILLER_MS=600;                // no first word yet this long after your turn: a spoken "Mm-hm."
   const IS_ANDROID=/Android/i.test(navigator.userAgent);
   const NARROW=window.matchMedia("(max-width:860px)");
 
@@ -534,7 +535,7 @@ import * as phone from "./phone.js";
     if(!heard||src.size<=1) return false;
     let hw=heard.split(" ").filter(w=>w.length>2&&!STOP.has(w));
     if(!hw.length) hw=heard.split(" ").filter(w=>w.length>2);   // "Who are you with?" is all stopwords
-    if(!hw.length) return S.audible;                  // filler while they talk: drop it
+    if(!hw.length) return true;                       // a grunt while, or just after, they talk: drop it
     let hit=0; hw.forEach(w=>{ if(src.has(w)) hit++; });
     return (hit/hw.length) >= 0.6;                     // mostly their words coming back
   }
@@ -648,7 +649,7 @@ import * as phone from "./phone.js";
     S.spec=null; delete sp.turn.pending;
     clearDeadAir(); S.silences=0;
     renderCall(); paintState();
-    sp.release(true);
+    sp.release(true); armFiller();
     return true;
   }
 
@@ -699,6 +700,37 @@ import * as phone from "./phone.js";
   }
 
   function beginSpeaking(){ S.speaking=true; S.spokenNow=""; S.played=""; clearDeadAir(); paintState(); }
+
+  /* --- a short acknowledgement in their own voice while the reply is on its way --- */
+  const FILLERS={ dm:["Mm-hm.","Okay.","Hm.","Right."], gk:["Mm-hm.","Okay.","Sure.","Hm."] };
+  let fillerBank={dm:[],gk:[]}, fillerTimer=null, fillerLive=false;
+  function primeFillers(role){
+    if(!premium()) return;
+    if(fillerBank[role].length>=2) return;
+    FILLERS[role].forEach((t)=>{
+      fetchVoice(t,role,"",S.callCtl&&S.callCtl.signal).then((url)=>{ if(S.phase==="live") fillerBank[role].push({t,url}); else URL.revokeObjectURL(url); }).catch(()=>{});
+    });
+  }
+  function armFiller(){
+    cancelFiller();
+    if(!premium()||S.studioDown||S.hold||S.ringing) return;
+    fillerTimer=setTimeout(playFiller,FILLER_MS);
+  }
+  function cancelFiller(){ clearTimeout(fillerTimer); fillerTimer=null; }
+  async function playFiller(){
+    fillerTimer=null;
+    const role=S.who==="dm"?"dm":"gk", bank=fillerBank[role];
+    if(S.phase!=="live"||S.audible||!S.busy||S.hold||S.ringing||!bank.length||(S.heard+S.interim).trim()) return;
+    const pick=bank.splice(Math.floor(Math.random()*bank.length),1)[0];
+    fillerLive=true; S.speaking=true; S.audible=true; S.spokenNow+=" "+pick.t; paintState();
+    const myGen=gen;
+    await phone.playThroughLine(pick.url,audioCtl.signal);
+    URL.revokeObjectURL(pick.url); fillerLive=false;
+    if(myGen!==gen||S.phase!=="live") return;
+    S.lastSpokeEnd=Date.now();
+    if(!queue.length&&!speakingChain){ S.audible=false; if(!S.busy) finishSpeaking(); else paintState(); }
+    primeFillers(role);
+  }
   function speakChunk(chunk,role,myGen){
     if(!chunk.trim()||myGen!==gen) return;
     const previous=S.spokenNow.trim();
@@ -715,7 +747,7 @@ import * as phone from "./phone.js";
     if(item.g!==gen){ drain(); return; }
     speakingChain=true;
     let begun=false;
-    const started=()=>{ if(begun||item.g!==gen) return; begun=true; S.audible=true; S.played=(S.played+" "+item.t).trim(); };
+    const started=()=>{ if(begun||item.g!==gen) return; begun=true; cancelFiller(); S.audible=true; S.played=(S.played+" "+item.t).trim(); };
     const next=()=>{
       if(item.g!==gen) return;                    // cut off; hushAudio already reset the chain
       speakingChain=false;
@@ -745,7 +777,7 @@ import * as phone from "./phone.js";
   function hushAudio(){
     gen++;
     queue.forEach(it=>{ if(it.url) it.url.then(u=>{ if(u) URL.revokeObjectURL(u); }); });
-    queue=[]; speakingChain=false; S.audible=false;
+    queue=[]; speakingChain=false; S.audible=false; cancelFiller();
     audioCtl.abort(); audioCtl=new AbortController();
     try{ TTS&&TTS.cancel(); }catch(e){}
   }
@@ -806,7 +838,7 @@ import * as phone from "./phone.js";
     await phone.ring(1,AbortSignal.any?AbortSignal.any([S.callCtl.signal,S.xferCtl.signal]):S.callCtl.signal);
     if(S.phase!=="live"||tok!==S.evSeq) return;
     S.ringing=false; S.xferCtl=null; if(S.sr&&S.sr.dirty) freshSession();
-    S.who="dm"; S.hold=false; S.pendingEv=null;
+    S.who="dm"; S.hold=false; S.pendingEv=null; primeFillers("dm");
     beat(S.scen.dm+" picks up.");
     flushNotes();
     S.turns.push({side:"note",xfer:true,text:"[Your front desk just put the Levitate caller through to you. You pick up the phone.]",shown:""});
@@ -849,6 +881,7 @@ import * as phone from "./phone.js";
     $("#fallback").hidden = srOK && S.mic!=="denied";
     if(!$("#fallback").hidden) showFallback();
     startMic();
+    fillerBank={dm:[],gk:[]}; primeFillers(S.who==="dm"?"dm":"gk");
     beat("Calling "+S.scen.phone+"…");
     askProspect(true);
   }
@@ -959,7 +992,7 @@ import * as phone from "./phone.js";
     flushNotes();
     S.turns.push(turn);
     $("#say").value=""; renderCall();
-    askProspect(false);
+    askProspect(false); if(!turn.meta.typed) armFiller();
   }
   function lastRepIndex(){
     for(let i=S.turns.length-1;i>=0;i--) if(S.turns[i].side==="rep"&&!S.turns[i].pending) return i;
@@ -1297,7 +1330,8 @@ import * as phone from "./phone.js";
     cancelSpec(); cancelEvent();
     S.reqSeq++; S.queuedAsk=false; S.pendingNotes=[];
     hushAudio(); S.speaking=false; S.ringing=false;
-    clearDeadAir();
+    clearDeadAir(); cancelFiller();
+    Object.values(fillerBank).flat().forEach(f=>URL.revokeObjectURL(f.url)); fillerBank={dm:[],gk:[]};
     stopMic(); clearInterval(S.tick); S.tick=null;
     S.phase="ended"; S.outcome=outcome; S.busy=false; S.endedAt=Date.now();
     if(S.outcome==="hangup") phone.disconnected(); else phone.hangup();
