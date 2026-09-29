@@ -34,7 +34,7 @@ It turns on when all of these hold:
 
 - `ELEVENLABS_API_KEY` has **Agents (Conversational AI)** read and write, plus **Speech to Text** and **Text to Speech**.
 - The server has a public HTTPS address ElevenLabs can call for replies: `PUBLIC_URL`, or on Vercel the production domain automatically.
-- Recommended on Vercel: a **Blob store** connected to the project (`BLOB_READ_WRITE_TOKEN`). Without it, call state is held in the running instance, which works while one warm instance serves the call (normal for a single caller) but can drop a call if Vercel switches instances mid-call.
+- Required on Vercel: a shared store, either **Supabase** connected to the project (`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`; tables `dialroom_state` and `dialroom_calls`, see `supabase/migrations`) or a **Blob store** (`BLOB_READ_WRITE_TOKEN`). Without one, call state is held in the running instance, which works while one warm instance serves the call (normal for a single caller) but can drop a call if Vercel switches instances mid-call.
 
 `GET /api/voice/status` says whether it is on and, if not, why. `VOICE_STACK=off` forces the fallback. `ELEVENLABS_AGENT_TTS_MODEL` picks the agent's voice model (default `eleven_turbo_v2`; `eleven_flash_v2` is faster and rougher). The agent is created and kept up to date automatically under the name "The Dial Room prospect"; it requires a session token from this server, so nobody can talk to it without the app. ElevenLabs bills agent conversations per minute.
 

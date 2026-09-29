@@ -24,10 +24,10 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   const reasons = [];
   if (!elevenKey) reasons.push("no ELEVENLABS_API_KEY");
   if (!/^https:\/\//.test(publicUrl)) reasons.push("no public HTTPS address (set PUBLIC_URL)");
-  // Without a Blob store, call state lives in the running instance. On Vercel that holds while one
-  // warm instance serves the call (the usual case for one caller); a Blob store makes it certain.
+  // Without a shared store, call state lives in the running instance. On Vercel that holds while one
+  // warm instance serves the call (the usual case for one caller); a shared store makes it certain.
   const warnings = [];
-  if (onVercel && STORE_KIND !== "blob") warnings.push("call state is held in memory: connect a Blob store (BLOB_READ_WRITE_TOKEN) to make it durable across instances");
+  if (onVercel && STORE_KIND === "memory") warnings.push("call state is held in memory: connect Supabase (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) or a Blob store (BLOB_READ_WRITE_TOKEN) to share it across instances");
   if (process.env.VOICE_STACK === "off") reasons.push("VOICE_STACK=off");
   const enabled = reasons.length === 0;
 

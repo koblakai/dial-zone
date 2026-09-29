@@ -10,6 +10,7 @@ import { pipeline } from "node:stream/promises";
 import { timingSafeEqual } from "node:crypto";
 import { findScenario, prospectSystem, gradePrompt, deliveryLine } from "../public/framework.js";
 import { createVoice } from "./voice.js";
+import { STORE_KIND, sb, SB_TABLE } from "./store.js";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 try { process.loadEnvFile(path.join(ROOT, ".env")); } catch { /* no .env: use the real environment */ }
@@ -329,9 +330,13 @@ function voiceFor(sc, role) {
   return env || (role === "dm" ? sc.dmVoiceId : sc.gkVoiceId) || "21m00Tcm4TlvDq8ikWAM";
 }
 
-/* ---------------- call log: a small JSON file ---------------- */
+/* ---------------- call log: a Supabase table when connected, else a small JSON file ---------------- */
 let callsP = null, writing = Promise.resolve();
-function loadCalls() {
+async function loadCalls() {
+  if (STORE_KIND === "supabase") {
+    const rows = await sb(`${SB_TABLE.calls}?select=rec&order=at.desc&limit=2000`);
+    return Object.fromEntries((rows || []).map((r) => [r.rec.id, r.rec]));
+  }
   return (callsP ??= readFile(DATA_FILE, "utf8").then(JSON.parse)
     .then((v) => (v && typeof v === "object" && !Array.isArray(v) ? v : Promise.reject(new Error("not a call-log object"))))
     .catch(async (e) => {
@@ -389,16 +394,24 @@ app.put("/api/calls/:id", async (req, res) => {
       objection: t?.side === "them" ? slug(t?.objection) : null,
     })).filter((t) => t.text) : [],
   };
+  try { await saveCall(rec); res.json(rec); }
+  catch (e) { console.error("save call:", e.message); res.status(500).json({ code: "save_failed" }); }
+});
+async function saveCall(rec) {
+  if (STORE_KIND === "supabase") {
+    await sb(SB_TABLE.calls, { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ id: rec.id, at: rec.at, rec }) });
+    return;
+  }
   const calls = await loadCalls();
-  calls[id] = rec;
+  calls[rec.id] = rec;
   const ids = Object.keys(calls);
   if (ids.length > 2000) {                // keep the file small
     ids.sort((x, y) => String(calls[x].at).localeCompare(String(calls[y].at)));
     ids.slice(0, ids.length - 2000).forEach((k) => delete calls[k]);
   }
-  try { await saveCalls(calls); res.json(rec); }
-  catch { res.status(500).json({ code: "save_failed" }); }
-});
+  await saveCalls(calls);
+}
 
 // Vercel runs this module directly (its Express preset looks for src/app.js).
 export default app;
