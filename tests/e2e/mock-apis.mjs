@@ -24,6 +24,10 @@ export function startMock(port=0){ return new Promise((resolve)=>{ const srv=htt
     if(req.url.startsWith("/__log")){ res.end(JSON.stringify(log)); return; }
     if(req.url.startsWith("/__reset")){ log.length=0; res.end("ok"); return; }
     const body=JSON.parse(b||"{}"); log.push({url:req.url,beta:req.headers["anthropic-beta"],xi:req.headers["xi-api-key"],body});
+    if(req.url.startsWith("/v1/convai/agents/create")){ res.writeHead(200,{"content-type":"application/json"}); res.end(JSON.stringify({agent_id:"agent_test"})); return; }
+    if(req.url.startsWith("/v1/convai/agents/agent_test")){ res.writeHead(200,{"content-type":"application/json"}); res.end(JSON.stringify({agent_id:"agent_test"})); return; }
+    if(req.url.startsWith("/v1/convai/agents")){ res.writeHead(200,{"content-type":"application/json"}); res.end(JSON.stringify({agents:[]})); return; }
+    if(req.url.startsWith("/v1/convai/conversation/token")){ res.writeHead(200,{"content-type":"application/json"}); res.end(JSON.stringify({token:"tok_test",conversation_id:"conv_test"})); return; }
     if(req.url.includes("/text-to-speech/")){ res.writeHead(200,{"content-type":"audio/wav"}); res.end(wav(300+body.text.length*20)); return; }
     const msgBase={id:"msg_1",type:"message",role:"assistant",model:body.model,stop_reason:"end_turn",stop_sequence:null,usage:{input_tokens:1,output_tokens:1}};
     if(body.stream){

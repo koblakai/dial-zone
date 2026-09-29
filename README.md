@@ -26,6 +26,18 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 | `HOST` | no | Interface to listen on. Default `127.0.0.1` (this machine only) unless `APP_PASSWORD` is set. |
 | `LOG_LATENCY` | no | Set to `1` to log time-to-first-word for each prospect reply. |
 
+## Live voice (recommended)
+
+With live voice on, ElevenLabs runs the ear, the turn-taking and the mouth in one audio stream, and every reply still comes from Claude through this server (the personas, rules and grading are unchanged). Without it, the app falls back to the browser's speech recognition and the text-to-speech pipeline.
+
+It turns on when all of these hold:
+
+- `ELEVENLABS_API_KEY` has **Agents (Conversational AI)** read and write, plus **Speech to Text** and **Text to Speech**.
+- The server has a public HTTPS address ElevenLabs can call for replies: `PUBLIC_URL`, or on Vercel the production domain automatically.
+- On Vercel, a **Blob store** is connected to the project (`BLOB_READ_WRITE_TOKEN`), because the reply endpoint can land on a different instance than the browser's requests. Locally nothing is needed.
+
+`GET /api/voice/status` says whether it is on and, if not, why. `VOICE_STACK=off` forces the fallback. `ELEVENLABS_AGENT_TTS_MODEL` picks the agent's voice model (default `eleven_flash_v2_5`; `eleven_v3_conversational` or `eleven_multilingual_v2` are smoother and slower). The agent is created and kept up to date automatically under the name "The Dial Room prospect"; it requires a session token from this server, so nobody can talk to it without the app. ElevenLabs bills agent conversations per minute.
+
 ## Hosted on Vercel
 
 `main` deploys automatically to the Vercel project **dial-room** (Express preset; `server.js` exports the app). Set `ANTHROPIC_API_KEY` and `APP_PASSWORD` in the project's Environment Variables, then redeploy. On Vercel the call log lives in `/tmp`, so it's temporary and per instance.
@@ -54,6 +66,8 @@ The end-to-end run starts stand-in APIs (`tests/e2e/mock-apis.mjs`) and a script
 ## Code layout
 
 - `server.js`: entry point; starts the server.
+- `src/voice.js`: live voice. Creates the ElevenLabs agent, issues session tokens, serves the reply endpoint ElevenLabs calls (Claude behind a chat-completions shape), and the state and notes routes the browser uses. `src/store.js` keeps call state (memory locally, Vercel Blob when hosted).
+- `public/voicecall.js`: the browser side of live voice, over the vendored ElevenLabs SDK in `public/vendor/`.
 - `src/app.js`: the Express app. `/api/prospect` streams the prospect's reply (NDJSON), `/api/grade` returns a structured teardown, `/api/tts` proxies ElevenLabs, `/api/calls` stores the call log in `data/calls.json`.
 - `public/prospects.js`: the prospect pool. Each practice's public contact card, private setup (who answers, whether an office manager can book), voices and persona text.
 - `public/framework.js`: the five steps, the prospect rules and every prompt. The browser and the server both import it.

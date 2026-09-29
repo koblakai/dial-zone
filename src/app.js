@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { timingSafeEqual } from "node:crypto";
 import { findScenario, prospectSystem, gradePrompt, deliveryLine } from "../public/framework.js";
+import { createVoice } from "./voice.js";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 try { process.loadEnvFile(path.join(ROOT, ".env")); } catch { /* no .env: use the real environment */ }
@@ -42,6 +43,11 @@ export const app = express();
 app.disable("x-powered-by");
 // Behind a local HTTPS proxy, rate-limit by the real client address (never trust remote X-Forwarded-For).
 app.set("trust proxy", process.env.TRUST_PROXY || (ON_VERCEL ? true : "loopback"));
+
+// ElevenLabs calls this route from outside for every prospect reply; it is keyed by a secret in the
+// URL rather than the app password. Registered first so the password check below never sees it.
+let voice = null;
+app.use("/api/voice", express.json({ limit: "1mb" }), (req, res, next) => (voice ? voice.llm(req, res, next) : next()));
 
 // Optional shared password (HTTP Basic auth) so a deployed copy isn't an open door to your API keys.
 if (APP_PASSWORD) {
@@ -253,8 +259,14 @@ app.post("/api/grade", limit(12), async (req, res) => {
 });
 
 /* ---------------- config ---------------- */
+voice = createVoice({ client, elevenKey: ELEVEN_KEY, elevenBase: ELEVEN_BASE, onVercel: ON_VERCEL, port: PORT,
+  prospectModel: PROSPECT_MODEL, prospectEffort: PROSPECT_EFFORT, prospectThinking: PROSPECT_THINKING, fallback: FALLBACK,
+  toMessages, cleanTurns, cleanMeta, limit, clean, slug, num });
+app.use("/api/voice", voice.api);
+export const VOICE = voice;
+
 app.get("/api/config", (_req, res) => {
-  res.json({ brain: HAS_BRAIN, tts: ELEVEN_KEY ? "elevenlabs" : "browser" });
+  res.json({ brain: HAS_BRAIN, tts: ELEVEN_KEY ? "elevenlabs" : "browser", voice: voice.enabled ? "agent" : "pipeline" });
 });
 
 /* ---------------- premium voices (optional): ElevenLabs ---------------- */

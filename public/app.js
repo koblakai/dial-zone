@@ -1,5 +1,6 @@
 import { STEPS, SCENARIOS, DIALS_TARGET, CONNECT_TARGET, findScenario } from "./framework.js";
 import * as phone from "./phone.js";
+import * as vc from "./voicecall.js";
 
   const SILENCE_MS=900;               // end-of-turn after this much quiet…
   const SILENCE_PITCH_MS=1000;        // …a little more once you're pitching or qualifying (longer thoughts)
@@ -33,7 +34,8 @@ import * as phone from "./phone.js";
     deadAir:null, silences:0, callCtl:null,
     lineCheck:{busy:false,text:"",dot:""},
     view:"contacts", pane:"list", filter:"all", query:"", dial:"", padOpen:false,
-    cfg:{brain:true,tts:"browser"}
+    cfg:{brain:true,tts:"browser",voice:"pipeline"},
+    agent:null            // the live-voice session (ElevenLabs) when cfg.voice is "agent"
   };
   const $=(s)=>document.querySelector(s);
   const el=(t,c,x)=>{const n=document.createElement(t); if(c)n.className=c; if(x!=null)n.textContent=x; return n;};
@@ -409,7 +411,7 @@ import * as phone from "./phone.js";
     line.appendChild(el("span","dot "+micDot)); line.appendChild(el("span","",micText));
     line.appendChild(el("span","hint","·"));
     line.appendChild(el("span","dot "+(voiceOK()?"ok":"bad")));
-    line.appendChild(el("span","",premium()?"Studio voices on":voiceOK()?"Browser voices":"No voice out here"));
+    line.appendChild(el("span","",S.cfg.voice==="agent"?"Live voice — ElevenLabs on the line":premium()?"Studio voices on":voiceOK()?"Browser voices":"No voice out here"));
     set.appendChild(line);
     const test=el("button","ghostbtn"); test.type="button"; test.append(icon("mic"),el("span","",lc.busy?"Testing…":"Test the line"));
     test.disabled=lc.busy;
@@ -926,6 +928,7 @@ import * as phone from "./phone.js";
 
   /* ================= the call ================= */
   function startCall(){
+    if(S.cfg.voice==="agent") return startAgentCall();
     try{ TTS&&TTS.cancel(); }catch(e){}
     phone.stopPlayback();
     unlockAudio();
@@ -947,7 +950,136 @@ import * as phone from "./phone.js";
     askProspect(true);
   }
 
-  function beat(txt,dir){ S.turns.push({side:"beat",text:txt,dir:!!dir}); renderCall(); }
+  function beat(txt,dir){ S.turns.push({side:"beat",text:txt,dir:!!dir,seq:S.agent?agentConvoCount():0}); renderCall(); }
+  function agentConvoCount(){ return S.turns.filter(t=>t.side!=="beat").length; }
+
+  /* ================= live voice (ElevenLabs on the line, Claude behind it) ================= */
+  const AGENT_DEAD_AIR_MS=6000, AGENT_POLL_MS=800;
+  async function startAgentCall(){
+    phone.stopPlayback(); unlockAudio();
+    cancelEvent();
+    S.phase="live"; S.who=S.scen.open; S.step=S.scen.open==="dm"?2:1; S.reached=1;
+    S.turns=[]; S.peeks=0; S.retries=0; S.outcome=null; S.teardown=null; S.silences=0; S.peekMood=false;
+    S.lastSpokeEnd=0; S.spokenNow=""; S.played=""; S.audible=false; S.speaking=false; S.busy=false; S.endedAt=0;
+    S.callAt=""; S.peekStep=null; S.heard=""; S.heardSegs=[]; S.interim=""; S.tm=null; S.mic="idle";
+    S.callCtl=new AbortController();
+    const a=S.agent={conv:null,callId:null,meter:vc.makeMeter(),poll:null,quiet:null,state:null,muted:false,closing:false,local:[]};
+    startClock(); renderKeys(); paintBoard(); paintList(); renderCall(); renderRail();
+    $("#fallback").hidden=true;
+    beat("Calling "+S.scen.phone+"…");
+    S.ringing=true; paintState();
+    try{
+      const [,sess]=await Promise.all([
+        vc.loadSdk(),
+        vc.api("/session",{scenarioId:S.scen.id,diff:S.diff}),
+        phone.ring(1+(Math.random()<0.4?1:0),S.callCtl.signal)
+      ]);
+      if(S.agent!==a||S.phase!=="live") return;
+      a.callId=sess.callId; S.lastId=sess.callId;
+      await agentConnect(a,sess);
+      if(S.agent!==a||S.phase!=="live") return;
+      S.ringing=false; S.mic="live"; beat("Connected."); paintState();
+      a.conv.sendUserMessage("[pickup]"); S.busy=true; paintState();
+      a.poll=setInterval(()=>agentPoll(a),AGENT_POLL_MS);
+    }catch(e){
+      if(S.agent!==a) return;
+      S.ringing=false; a.closing=true; S.agent=null;
+      beat(e&&e.code==="voice_off"?"Live voice is off on this server.":"Couldn’t get a line ("+(e&&e.message||"error")+"). Dial again.","dir");
+      endCall("hungup");
+    }
+  }
+  function agentConnect(a,sess){
+    const mine={}; a.session=mine;                    // events from an earlier session on this call are ignored
+    const live=()=>S.agent===a&&a.session===mine;
+    return vc.openSession({token:sess.token,overrides:sess.overrides,extraBody:sess.extraBody,on:{
+      them:(text)=>{ if(!live()) return; text=String(text||"").trim(); a.local.push({side:"them",who:S.who,text}); S.busy=false; renderAgentTurns(a); setTimeout(()=>agentPoll(a),150); },
+      rep:(text)=>{ if(!live()) return; const meta=a.meter.take(text); clearTimeout(a.quiet);
+        vc.api("/"+a.callId+"/note",{kind:"delivery",meta}).catch(()=>{});
+        a.local.push({side:"rep",text,meta}); S.busy=true; renderAgentTurns(a); },
+      correction:(text)=>{ if(!live()) return; vc.api("/"+a.callId+"/note",{kind:"correction",text}).catch(()=>{});
+        const last=[...a.local].reverse().find(t=>t.side==="them"); if(last){ last.cut=true; if(text&&text.length<last.text.length) last.text=text; } renderAgentTurns(a); },
+      mode:(mode)=>{ if(!live()) return; a.meter.agentMode(mode);
+        S.speaking=mode==="speaking"; S.audible=S.speaking; if(S.speaking) S.busy=false;
+        paintState();
+        if(mode==="listening"){ S.lastSpokeEnd=Date.now(); agentArmQuiet(a); agentCheckEvents(a); } else clearTimeout(a.quiet); },
+      vad:(score)=>{ if(!live()) return; a.meter.vad(score); if(score>=0.5){ clearTimeout(a.quiet); a.quiet=null; if(!a.talking){ a.talking=true; updateMouth(); } } else if(a.talking){ a.talking=false; updateMouth(); } },
+      ended:()=>{ if(!live()||a.closing) return;
+        a.closing=true; beat("The line dropped.","dir"); endCall("hungup"); },
+      error:(m)=>{ if(!live()) return; flash(String(m||"Line error").slice(0,80)); }
+    }}).then((conv)=>{ a.conv=conv; return conv; });
+  }
+  function renderAgentTurns(a){
+    // the server's record, plus whatever it hasn't caught up with yet
+    const st=a.state;
+    const base=st?st.turns.map(agentTurn):[];
+    const known=new Set(base.map(t=>t.text));
+    const convo=[...base,...a.local.filter(t=>!known.has(t.text))];
+    // beats keep their place among the turns they were announced between
+    const beats=S.turns.filter(t=>t.side==="beat").sort((x,y)=>(x.seq||0)-(y.seq||0));
+    const out=[]; let b=0;
+    for(let i=0;i<=convo.length;i++){ while(b<beats.length&&(beats[b].seq||0)<=i){ out.push(beats[b++]); } if(i<convo.length) out.push(convo[i]); }
+    S.turns=out;
+    renderCall();
+  }
+  function agentTurn(t){
+    if(t.side==="note") return {side:"note",text:t.text,shown:t.text};
+    if(t.side==="rep") return {side:"rep",text:t.text,meta:t.meta||{typed:true},flagged:!!t.flagged};
+    return {side:"them",who:t.who||S.who,text:t.text,cut:!!t.cut,patience:t.patience,objection:t.objection,tag:t.tag};
+  }
+  async function agentPoll(a){
+    if(S.agent!==a||S.phase!=="live") return;
+    let st; try{ st=await vc.api("/"+a.callId+"/state"); }catch(e){ return; }
+    if(S.agent!==a||S.phase!=="live") return;
+    a.state=st;
+    if(st.diff!==S.diff){ S.diff=st.diff; }
+    const stepWas=S.step; S.who=st.who; S.step=st.step; S.reached=Math.max(S.reached,st.reached);
+    a.local=a.local.filter(t=>!st.turns.some(x=>x.text===t.text));
+    renderAgentTurns(a);
+    if(stepWas!==S.step) paintBoard();
+    if(!S.speaking) agentCheckEvents(a);
+    if(S.phase==="live") renderRail();
+  }
+  // a hang-up, a booking or a transfer takes effect once the prospect has finished saying it
+  async function agentCheckEvents(a){
+    const st=a.state; if(!st||S.speaking||a.acting) return;
+    if(st.ended){
+      a.acting=true; a.closing=true; S.outcome=st.outcome;
+      try{ await a.conv.endSession(); }catch(e){}
+      if(S.agent===a) endCall(st.outcome||"hungup");
+      return;
+    }
+    if(st.pendingEvent==="transferred"&&!a.transferring){
+      a.transferring=true; a.acting=true; a.closing=true; clearTimeout(a.quiet); clearInterval(a.poll);
+      try{ await a.conv.endSession(); }catch(e){}
+      if(S.agent!==a||S.phase!=="live") return;
+      beat("On hold — transferring…"); S.ringing=true; paintState();
+      try{
+        const [sess]=await Promise.all([vc.api("/session",{scenarioId:S.scen.id,diff:S.diff,callId:a.callId}), phone.ring(1,S.callCtl.signal)]);
+        if(S.agent!==a||S.phase!=="live") return;
+        a.closing=false; await agentConnect(a,sess);
+        if(S.agent!==a||S.phase!=="live") return;
+        S.ringing=false; S.who="dm"; a.meter.reset(); beat(S.scen.dm+" picks up."); paintBoard(); paintState();
+        a.conv.sendUserMessage("[Your front desk just put the Levitate caller through to you. You pick up the phone.]"); S.busy=true; paintState();
+        a.transferring=false; a.acting=false; a.poll=setInterval(()=>agentPoll(a),AGENT_POLL_MS);
+      }catch(e){ if(S.agent!==a) return; S.ringing=false; beat("The transfer dropped.","dir"); endCall("hungup"); }
+    }
+  }
+  function agentArmQuiet(a){
+    clearTimeout(a.quiet);
+    a.quiet=setTimeout(()=>{
+      a.quiet=null;
+      if(S.agent!==a||S.phase!=="live"||S.speaking||S.busy||a.meter.speaking()||a.acting) return;
+      if($("#say").value.trim()) return;
+      S.silences++; const secs=Math.round(AGENT_DEAD_AIR_MS/1000);
+      a.conv.sendUserMessage("[silence: the rep has said nothing for "+secs+" seconds]"); S.busy=true; paintState();
+    },AGENT_DEAD_AIR_MS);
+  }
+  function agentSendText(text){
+    const a=S.agent; if(!a||!a.conv) return;
+    vc.api("/"+a.callId+"/note",{kind:"delivery",meta:{typed:true}}).catch(()=>{});
+    a.conv.sendUserMessage(text); a.local.push({side:"rep",text,meta:{typed:true}});
+    $("#say").value=""; S.busy=true; renderAgentTurns(a); paintState();
+  }
 
   function whoLabel(who){
     return who==="dm" ? S.scen.dm : (S.scen.gk||"Front desk");
@@ -1012,9 +1144,10 @@ import * as phone from "./phone.js";
   /* the only thing that repaints while you are mid-sentence */
   function updateMouth(){
     if(!mouthBox||S.phase!=="live") return;
-    const live=polish((S.heard+" "+S.interim).trim());
-    mouthBox.className="mouthbox"+(live?"":" idle");
+    const live=S.agent?"":polish((S.heard+" "+S.interim).trim());
+    mouthBox.className="mouthbox"+(live||(S.agent&&S.agent.talking)?"":" idle");
     if(live){ mouthLine.className="said"; mouthLine.textContent=live; }
+    else if(S.agent&&S.agent.talking){ mouthLine.className="waiting"; mouthLine.textContent="Talking…"; }
     else{
       mouthLine.className="waiting";
       mouthLine.textContent =
@@ -1037,6 +1170,7 @@ import * as phone from "./phone.js";
   function sendLine(text,meta){
     text=String(text||"").trim();
     if(!text||S.phase!=="live") return;
+    if(S.agent){ agentSendText(text); return; }
     const turn={side:"rep",text:text,meta:meta||{typed:true}};
     if(S.hold||S.ringing){                        // call is ending or being transferred
       if(S.pendingEv==="transferred"){ S.turns.push(turn); $("#say").value=""; renderCall(); }
@@ -1250,7 +1384,7 @@ import * as phone from "./phone.js";
     {k:"M",label:"Mute",icon:"mic",fn:toggleMic},
     {k:"K",label:"Keypad",icon:"keypad",fn:togglePad},
     {k:"R",label:"Retry line",icon:"retry",fn:retryLine},
-    {k:"B",label:"Cut in",icon:"cut",fn:()=>{ if(!cutThemOff()) flash("Nobody’s talking."); }},
+    {k:"B",label:"Cut in",icon:"cut",fn:()=>{ if(S.agent){ flash("Just talk — they’ll stop."); return; } if(!cutThemOff()) flash("Nobody’s talking."); }},
     {k:"F",label:"Flag",icon:"flag",fn:flagLine},
     {k:"/",label:"Script",icon:"script",fn:peek},
     {k:"T",label:"Read room",icon:"room",fn:peekMood},
@@ -1321,6 +1455,7 @@ import * as phone from "./phone.js";
   }
 
   function retryLine(){
+    if(S.agent){ flash("The line is live — just say it again."); return; }
     if(S.tm||(S.heard+S.interim).trim()){          // still mid-sentence: throw away what you've said
       consumeUtterance(); cancelSpec(); updateMouth(); paintState();
       flash("Say it again."); armDeadAir(); return;
@@ -1351,16 +1486,20 @@ import * as phone from "./phone.js";
     const was=S.diff; S.diff=Math.min(5,Math.max(1,S.diff+d));
     if(S.diff===was){ flash(d>0?"Already brutal.":"Already warm."); return; }
     const note={side:"director",text:"[DIRECTOR: resistance goes from "+was+" to "+S.diff+" of 5 ("+(d>0?"tougher":"easier")+"). Adjust from your next line on.]"};
-    if(S.busy) S.pendingNotes.push(note); else S.turns.push(note);   // never before a reply that didn't see it
+    if(S.agent) vc.api("/"+S.agent.callId+"/note",{kind:"director",diff:S.diff,text:note.text}).catch(()=>{});
+    else if(S.busy) S.pendingNotes.push(note); else S.turns.push(note);   // never before a reply that didn't see it
     flash("Resistance "+S.diff+".");
     paintBoard(); renderCall();
   }
   function flagLine(){
     const i=lastRepIndex(); if(i<0){ flash("Nothing to flag."); return; }
     S.turns[i].flagged=!S.turns[i].flagged; renderCall();
+    if(S.agent) vc.api("/"+S.agent.callId+"/note",{kind:"flag"}).catch(()=>{});
     flash(S.turns[i].flagged?"Flagged for the teardown.":"Unflagged.");
   }
   function toggleMic(){
+    if(S.agent){ S.agent.muted=!S.agent.muted; try{ S.agent.conv&&S.agent.conv.setMicMuted(S.agent.muted); }catch(e){}
+      S.mic=S.agent.muted?"idle":"live"; showFallback(S.agent.muted); flash(S.agent.muted?"Mic muted — click the box to type, M to unmute.":"Mic live."); paintState(); return; }
     if(S.mic==="live"){
       if(S.tm||(S.heard+S.interim).trim()) endOfTurn();   // what you already said still counts
       stopMic(); showFallback(false); flash("Mic muted — click the box to type, M to unmute.");
@@ -1392,6 +1531,9 @@ import * as phone from "./phone.js";
     S.reqSeq++; S.queuedAsk=false; S.pendingNotes=[];
     hushAudio(); S.speaking=false; S.ringing=false;
     clearDeadAir(); cancelFiller();
+    if(S.agent){ const a=S.agent; S.agent=null; a.closing=true; clearInterval(a.poll); clearTimeout(a.quiet);
+      try{ a.conv&&a.conv.endSession(); }catch(e){}
+      if(how==="hungup"&&!outcome) vc.api("/"+a.callId+"/note",{kind:"hungup"}).catch(()=>{}); }
     Object.values(fillerBank).flat().forEach(f=>URL.revokeObjectURL(f.url)); fillerBank={dm:[],gk:[]};
     stopMic(); clearInterval(S.tick); S.tick=null;
     S.phase="ended"; S.outcome=outcome; S.busy=false; S.endedAt=Date.now();

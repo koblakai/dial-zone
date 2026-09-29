@@ -38,7 +38,9 @@ const apps = [];
 try {
   apps.push(await startApp(base, { ELEVENLABS_API_KEY: "test", ELEVENLABS_BASE_URL: mockUrl }));
   apps.push(await startApp(base + 1, {}));
-  for (const [mode, port] of [["premium", base], ["browser", base + 1]]) {
+  apps.push(await startApp(base + 2, { ELEVENLABS_API_KEY: "test", ELEVENLABS_BASE_URL: mockUrl, PUBLIC_URL: "https://dial.example.test" }));
+  const only = (process.env.MODES || "premium,browser,agent").split(",");
+  for (const [mode, port] of [["premium", base], ["browser", base + 1], ["agent", base + 2]].filter(([m]) => only.includes(m))) {
     const r = await runCalls({ mode, appUrl: `http://localhost:${port}/`, mockUrl, executablePath, log: !!process.env.VERBOSE });
     total.pass += r.pass; total.fail += r.fail;
   }

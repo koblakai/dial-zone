@@ -3,6 +3,7 @@
 import { chromium } from "playwright";
 import { fileURLToPath } from "node:url";
 const FAKE_MIC = fileURLToPath(new URL("./fake-mic.js", import.meta.url));
+const FAKE_AGENT = fileURLToPath(new URL("./fake-agent.js", import.meta.url));
 
 export async function runCalls({ mode, appUrl, mockUrl, executablePath, log: verbose = false }){
 const b=await chromium.launch({executablePath,args:["--autoplay-policy=no-user-gesture-required"]});
@@ -10,6 +11,7 @@ const p=await b.newPage({viewport:{width:1280,height:860}});
 const errs=[]; p.on("pageerror",e=>errs.push("PAGEERR "+e.message)); p.on("console",m=>{ if(m.type()==="error"&&!/fonts|ERR_CERT|favicon/.test(m.text())) errs.push("CONSOLE "+m.text()); });
 if(mode!=="premium") await p.addInitScript("window.__FAKE_TTS=true");
 await p.addInitScript({path:FAKE_MIC});
+if(mode==="agent") await p.addInitScript({path:FAKE_AGENT});
 await fetch(mockUrl+"/__reset");
 const stage=()=>p.$eval("#stage",e=>e.innerText);
 const state=()=>p.$eval("#stateTxt",e=>e.textContent);
@@ -23,11 +25,41 @@ try{
   await p.click("button.go");
   await waitText(/Meridian Spine and Performance, this is Kayla/i);
   ok(true,"ring + pickup");
-  if(mode!=="premium"){
+  if(mode==="agent"){
+    ok(/Connected/.test(await stage()),"live voice: session opened through the server");
+    const first=await p.evaluate(()=>window.__agentSessions[0].opts);
+    ok(first.overrides?.tts?.voiceId==="cgSgspJ2msm6clMCkdW9"&&first.overrides?.asr?.keywords?.includes("Marsh"),"front-desk voice and the practice's names go with the session");
+    await p.waitForTimeout(2600);
+    ok(/Your turn/.test(await state()),"listening after the greeting (state="+await state()+")");
+    await p.evaluate(()=>__agentSpeak("Hey it's Sam I needed to speak with Dr Marsh is he in between patients".split(" ")));
+    await waitText(/what this is regarding/);
+    ok(await count(/I needed to speak with Dr Marsh/g)===1,"the rep's line shows once");
+    await p.waitForTimeout(2200);
+    await p.evaluate(()=>__agentSpeak("It's Sam calling from Levitate".split(" ")));
+    await waitText(/put you through/);
+    await waitText(/This is Evan/,25000);
+    const second=await p.evaluate(()=>window.__agentSessions[1]&&window.__agentSessions[1].opts);
+    ok(!!second&&second.overrides?.tts?.voiceId==="iP95p4xoKVk53GoZ742B","transfer: a second session in the doctor's voice");
+    ok(!/front desk just put/.test(await stage()),"transfer note hidden from the transcript");
+    await p.waitForTimeout(900);
+    ok(/Hook/.test(await p.$eval("#ladder .rung.now",e=>e.textContent)),"stage moved on with the doctor (rung="+await p.$eval("#ladder .rung.now",e=>e.textContent)+")");
+    await p.waitForTimeout(2000);
+    await p.evaluate(()=>__agentSpeak("um so uh basically we um help law firms".split(" "),[150,900,150,150,150,150,150,150,150].map(x=>x)[0]));
+    await waitText(/hung up on you/i,25000);
+    ok(true,"hesitant rep -> hang up ends the live session");
+    ok(await p.evaluate(()=>window.__agentSessions.every(s=>!s.open)),"every session closed");
+    const log=await (await fetch(mockUrl+"/__log")).json();
+    const llm=log.filter(x=>x.body?.messages).map(x=>x.body.messages.at(-1).content);
+    ok(llm.some(c=>/\[delivery: .*fillers/.test(c)),"the prospect got a delivery reading with the fillers");
+    await p.click("text=Grade this call");
+    await p.waitForSelector(".delivery",{timeout:10000});
+    ok(true,"teardown renders");
+  } else if(mode!=="premium"){
     // the mic hears their greeting while it plays; the final lands ~0.9 s after it ends (fake TTS ~2.7 s)
     await p.evaluate(()=>__echoStream("Meridian Spine and Performance this is Kayla how can I help you".split(" "),220,3600));
   }
-  if(mode==="premium"){
+  if(mode==="agent"){ /* covered above */ }
+  else if(mode==="premium"){
     await waitListening();
     // late final: Chrome marks the result final 1.6 s after the last word (after end of turn)
     await p.evaluate(()=>__speak("Hey it's Sam I needed to speak with Dr Marsh is he in between patients".split(" "),120,1600));
