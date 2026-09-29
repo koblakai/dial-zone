@@ -48,6 +48,7 @@ try{
     await waitText(/hung up on you/i,25000);
     ok(true,"hesitant rep -> hang up ends the live session");
     ok(await p.evaluate(()=>window.__agentSessions.every(s=>!s.open)),"every session closed");
+    ok((await p.evaluate(()=>window.__toolCalls||0))>=4,"every reply carried its state as a tool call ("+await p.evaluate(()=>window.__toolCalls||0)+")");
     const log=await (await fetch(mockUrl+"/__log")).json();
     const llm=log.filter(x=>x.body?.messages).map(x=>x.body.messages.at(-1).content);
     ok(llm.some(c=>/\[delivery: .*fillers/.test(c)),"the prospect got a delivery reading with the fillers");

@@ -996,6 +996,14 @@ import * as vc from "./voicecall.js";
       rep:(text)=>{ if(!live()) return; const meta=a.meter.take(text); clearTimeout(a.quiet);
         vc.api("/"+a.callId+"/note",{kind:"delivery",meta}).catch(()=>{});
         a.local.push({side:"rep",text,meta}); S.busy=true; renderAgentTurns(a); },
+      state:(p)=>{ if(!live()) return;                   // the reply's control tag, straight from the line
+        const st=a.state||{turns:[],ended:false,outcome:null,pendingEvent:null};
+        const ev=String(p.event||"none");
+        st.who=p.who==="dm"?"dm":(S.scen.gk?"gatekeeper":"dm"); st.step=Math.min(5,Math.max(1,parseInt(p.step,10)||S.step)); st.reached=Math.max(st.reached||1,st.step);
+        if(ev==="transferred"&&S.who==="gatekeeper"&&!a.transferDone) st.pendingEvent="transferred";
+        else if(ev==="hangup"||ev==="booked"||ev==="rep-ended"||p.patience===0){ st.ended=true; st.outcome=p.objection==="rep-ended"?"wrapped":(ev==="none"?"hangup":ev==="rep-ended"?"wrapped":ev); }
+        const lt=[...a.local].reverse().find(t=>t.side==="them"); if(lt){ lt.patience=p.patience??null; lt.objection=p.objection&&p.objection!=="none"?p.objection:null; }
+        a.state=st; S.who=st.who; S.step=st.step; S.reached=Math.max(S.reached,st.reached); paintBoard(); renderAgentTurns(a); },
       correction:(text)=>{ if(!live()) return; vc.api("/"+a.callId+"/note",{kind:"correction",text}).catch(()=>{});
         const last=[...a.local].reverse().find(t=>t.side==="them"); if(last){ last.cut=true; if(text&&text.length<last.text.length) last.text=text; } renderAgentTurns(a); },
       mode:(mode)=>{ if(!live()) return; a.meter.agentMode(mode);
@@ -1030,6 +1038,9 @@ import * as vc from "./voicecall.js";
     if(S.agent!==a||S.phase!=="live") return;
     let st; try{ st=await vc.api("/"+a.callId+"/state"); }catch(e){ return; }
     if(S.agent!==a||S.phase!=="live") return;
+    if(a.state&&a.state.ended&&!st.ended){ st.ended=true; st.outcome=a.state.outcome; }
+    if(a.state&&a.state.pendingEvent&&!st.pendingEvent&&!a.transferDone) st.pendingEvent=a.state.pendingEvent;
+    if(a.transferDone) st.pendingEvent=null;
     a.state=st;
     if(st.diff!==S.diff){ S.diff=st.diff; }
     const stepWas=S.step; S.who=st.who; S.step=st.step; S.reached=Math.max(S.reached,st.reached);
@@ -1060,7 +1071,8 @@ import * as vc from "./voicecall.js";
         if(S.agent!==a||S.phase!=="live") return;
         S.ringing=false; S.who="dm"; a.meter.reset(); beat(S.scen.dm+" picks up."); paintBoard(); paintState();
         a.conv.sendUserMessage("[Your front desk just put the Levitate caller through to you. You pick up the phone.]"); S.busy=true; paintState();
-        a.transferring=false; a.acting=false; a.poll=setInterval(()=>agentPoll(a),AGENT_POLL_MS);
+        a.transferring=false; a.acting=false; a.transferDone=true; if(a.state) a.state.pendingEvent=null;
+        a.poll=setInterval(()=>agentPoll(a),AGENT_POLL_MS);
       }catch(e){ if(S.agent!==a) return; S.ringing=false; beat("The transfer dropped.","dir"); endCall("hungup"); }
     }
   }

@@ -13,10 +13,14 @@
     constructor(opts){ this.opts=opts; this.messages=[]; this.open=true; this.muted=false; sessions.push(this); }
     async askLlm(){
       const r=await fetch("api/voice/llm/"+(await secret())+"/chat/completions",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({model:"dialroom",stream:true,messages:[{role:"system",content:"agent prompt"},...this.messages],dialroom:this.opts.customLlmExtraBody.dialroom})});
-      const text=(await r.text()).split("\n\n").filter(l=>l.startsWith("data: ")&&!l.startsWith("data: [DONE]")).map(l=>JSON.parse(l.slice(6)).choices[0].delta.content||"").join("");
+        body:JSON.stringify({model:"dialroom",stream:true,messages:[{role:"system",content:"agent prompt"},...this.messages],dialroom:this.opts.customLlmExtraBody.dialroom,
+          tools:[{type:"function",function:{name:"dialroom_state",parameters:{type:"object",properties:{}}}}]})});
+      const deltas=(await r.text()).split("\n\n").filter(l=>l.startsWith("data: ")&&!l.startsWith("data: [DONE]")).map(l=>JSON.parse(l.slice(6)).choices[0].delta);
+      const text=deltas.map(d=>d.content||"").join("");
+      const call=deltas.flatMap(d=>d.tool_calls||[])[0];
       if(!this.open) return;
-      this.messages.push({role:"assistant",content:text});
+      this.messages.push({role:"assistant",content:text,...(call?{tool_calls:[{id:call.id,type:"function",function:call.function}]}:{})});
+      if(call&&this.opts.clientTools&&this.opts.clientTools.dialroom_state){ window.__toolCalls=(window.__toolCalls||0)+1; setTimeout(()=>this.opts.clientTools.dialroom_state(JSON.parse(call.function.arguments)),50); }
       if(!text) return;
       this.opts.onMessage&&this.opts.onMessage({role:"agent",source:"ai",message:text,event_id:this.messages.length});
       this.opts.onModeChange&&this.opts.onModeChange({mode:"speaking"});

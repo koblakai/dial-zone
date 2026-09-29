@@ -83,3 +83,29 @@ test("a call: session, greeting, a rep line with its delivery note, transfer, pi
   spoken = await sse(await llm([{ role: "user", content: "still there?" }]));
   assert.equal(spoken, "");
 });
+
+test("without the store, a call is rebuilt from ElevenLabs' history and the tag rides back as a tool call", async () => {
+  const dr = { callId: "vghost", scenarioId: "meridian", diff: 3, who: "gatekeeper", seed: "s" };
+  const tools = [{ type: "function", function: { name: "dialroom_state", parameters: {} } }];
+  const llm = (msgs) => post(`/api/voice/llm/${secret}/chat/completions`, { model: "dialroom", stream: true, messages: msgs, dialroom: dr, tools });
+  // greeting: no state anywhere, only the extra body
+  let r = await llm([{ role: "user", content: "[pickup]" }]);
+  let text = await r.text();
+  const deltas = text.split("\n\n").map((l) => l.replace(/^data: /, "")).filter((l) => l.startsWith("{")).map((l) => JSON.parse(l).choices[0].delta);
+  assert.match(deltas.map((d) => d.content || "").join(""), /this is Kayla/);
+  const call = deltas.map((d) => d.tool_calls?.[0]).find(Boolean);
+  assert.ok(call, "a dialroom_state tool call is streamed"); assert.equal(call.function.name, "dialroom_state");
+  const args = JSON.parse(call.function.arguments);
+  assert.equal(args.patience, 8); assert.equal(args.who, "gatekeeper");
+  // ElevenLabs reports the tool call back: nothing new is said
+  r = await llm([{ role: "user", content: "[pickup]" }, { role: "assistant", content: "hi", tool_calls: [{ id: call.id, type: "function", function: call.function }] }, { role: "tool", tool_call_id: call.id, content: "ok" }]);
+  assert.equal(await sse(r), "");
+  // next turn on a cold instance: the history carries the tag, the rep line is answered in context
+  r = await llm([{ role: "user", content: "[pickup]" }, { role: "assistant", content: "hi", tool_calls: [{ id: call.id, type: "function", function: call.function }] },
+    { role: "tool", tool_call_id: call.id, content: "ok" }, { role: "user", content: "It's Sam from Levitate" }]);
+  assert.match(await sse(r), /put you through/);
+  const log = await (await fetch(`http://127.0.0.1:${mock.address().port}/__log`)).json();
+  const msgs = log.filter((x) => x.body?.messages).at(-1).body.messages;
+  assert.match(msgs[1].content, /\[\[gatekeeper\|1\|none\|8\|none\]\]$/, "the rebuilt history keeps the earlier tag");
+  assert.match(msgs.at(-1).content, /^Caller: It's Sam from Levitate/);
+});

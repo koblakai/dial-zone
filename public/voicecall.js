@@ -32,6 +32,7 @@ export async function openSession({ token, overrides, extraBody, on }) {
   const conv = await Conversation.startSession({
     conversationToken: token, connectionType: "webrtc",
     overrides, customLlmExtraBody: extraBody, useWakeLock: false,
+    clientTools: { dialroom_state: (p) => { on.state && on.state(p || {}); return "ok"; } },
     onConnect: () => on.connected && on.connected(),
     onDisconnect: (d) => on.ended && on.ended(d),
     onError: (m) => on.error && on.error(m),

@@ -54,6 +54,8 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
             llm: "custom-llm",
             custom_llm: { url: llmUrl, model_id: "dialroom", api_type: "chat_completions" },
             temperature: null,
+            tools: [{ type: "client", name: "dialroom_state", description: "Reports the call's state to the app after each reply. The app calls it; never mention it.",
+              expects_response: false, parameters: { type: "object", properties: { who: { type: "string" }, step: { type: "integer" }, event: { type: "string" }, patience: { type: "integer" }, objection: { type: "string" } }, required: [] } }],
           },
         },
         tts: { model_id: ttsModel, voice_id: SCENARIOS[0].gkVoiceId || SCENARIOS[0].dmVoiceId, stability: 0.5, similarity_boost: 0.8, speed: 1.0 },
@@ -137,7 +139,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
       res.json({
         callId: state.id, token: tok.token, conversationId: tok.conversation_id || null, who: state.who, transfer,
         overrides: { agent: { firstMessage: "" }, tts: { voiceId: role === "dm" ? sc.dmVoiceId : (sc.gkVoiceId || sc.dmVoiceId) }, asr: { keywords: keywordsFor(sc) } },
-        extraBody: { dialroom: { callId: state.id } },
+        extraBody: { dialroom: { callId: state.id, scenarioId: sc.id, diff: state.diff, who: state.who, seed: state.seed } },
       });
     } catch (e) {
       console.error("voice session:", e.message);
@@ -179,8 +181,13 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   async function handleTurn(req, res) {
     if (!secret || req.params.secret !== secret) return res.status(404).end();
     const body = req.body || {};
-    const callId = body.dialroom?.callId || body.custom_llm_extra_body?.dialroom?.callId || body.extra_body?.dialroom?.callId || "";
+    const dr = body.dialroom || body.custom_llm_extra_body?.dialroom || body.extra_body?.dialroom || null;
+    const callId = dr?.callId || "";
     let state = callId ? await loadState(String(callId).slice(0, 40)) : null;
+    const toolsOffered = (body.tools || []).some((t) => (t?.function?.name || t?.name) === "dialroom_state");
+    // The store can miss (another instance, no Blob): rebuild the call from the history ElevenLabs
+    // sends, where our earlier replies carry their control tags as dialroom_state tool calls.
+    if (!state && dr?.scenarioId && findScenario(dr.scenarioId)) state = rebuildState(dr, body.messages || []);
     if (!state || process.env.LOG_VOICE) {
       // What ElevenLabs actually sends (shape only, no transcript): the one thing the docs never showed us.
       const shape = { keys: Object.keys(body), callId: callId || null, found: !!state, store: STORE_KIND,
@@ -190,6 +197,9 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
       console.log("voice llm request", JSON.stringify(shape).slice(0, 1500));
     }
     if (!state) return res.status(400).json({ error: { message: "unknown call" } });
+    // ElevenLabs reporting our own tool call back: nothing new to say.
+    const lastMsg = (body.messages || []).at(-1);
+    if (lastMsg && lastMsg.role === "tool") return finish(res, body, "", null);
     const sc = findScenario(state.scenarioId);
     if (!sc) return res.status(400).json({ error: { message: "unknown scenario" } });
     if (state.ended) return finish(res, body, "", null);
@@ -258,7 +268,14 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
       if (!res.writableEnded && !res.headersSent) return res.status(502).json({ error: { message: "reply failed" } });
     }
     const tag = TAG.exec(raw);
-    if (streaming) { chunk("", true); res.write("data: [DONE]\n\n"); res.end(); }
+    const tagObj = tag ? { who: tag[1].toLowerCase(), step: parseInt(tag[2], 10), event: tag[3].toLowerCase(), patience: tag[4] != null ? parseInt(tag[4], 10) : null, objection: slug(tag[5]) || "none" } : null;
+    if (streaming) {
+      if (toolsOffered && tagObj) {
+        const call = { index: 0, id: "call_" + Date.now().toString(36), type: "function", function: { name: "dialroom_state", arguments: JSON.stringify(tagObj) } };
+        res.write(`data: ${JSON.stringify({ id: "chatcmpl-" + state.id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: "dialroom", choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }] })}\n\n`);
+      }
+      chunk("", true); res.write("data: [DONE]\n\n"); res.end();
+    }
     else finish(res, body, spoken, null);
 
     // Record the reply and apply its events, merging any notes that arrived meanwhile.
@@ -280,6 +297,36 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
       else if (ev !== "none") { st.ended = true; st.outcome = ev === "rep-ended" ? "wrapped" : ev; }
       st.lastAgentEnd = Date.now();
     });
+  }
+  // A call as ElevenLabs remembers it: user lines, our replies, and the tags we sent back as tool calls.
+  function rebuildState(dr, messages) {
+    const sc = findScenario(dr.scenarioId);
+    const st = { id: String(dr.callId || newId()).slice(0, 40), scenarioId: sc.id, diff: Math.min(5, Math.max(1, parseInt(dr.diff, 10) || 3)),
+      who: dr.who === "dm" || !sc.gk ? "dm" : "gatekeeper", step: dr.who === "dm" || sc.open === "dm" ? 2 : 1, reached: 1,
+      turns: [], notes: [], pendingMeta: null, elUserCount: 0, ended: false, outcome: null, pendingEvent: null, busy: false,
+      seed: String(dr.seed || dr.callId || "x").slice(0, 40), createdAt: new Date().toISOString(), lastAgentEnd: 0, rebuilt: true };
+    let users = 0;
+    for (const m of messages) {
+      if (m.role === "user") {
+        users++;
+        const u = textOf(m.content).trim();
+        if (!u || u === PICKUP_NOTE) continue;
+        if (/^\[[\s\S]*\]$/.test(u)) st.turns.push({ side: "note", text: u, shown: u === TRANSFER_NOTE ? "" : u });
+        else st.turns.push({ side: "rep", text: u, meta: null });
+      } else if (m.role === "assistant") {
+        const text = textOf(m.content).trim();
+        const tc = (m.tool_calls || []).find((c) => c?.function?.name === "dialroom_state");
+        let tag = null;
+        if (tc) { try { const a = JSON.parse(tc.function.arguments || "{}"); tag = { who: a.who === "dm" ? "dm" : "gatekeeper", step: Math.min(5, Math.max(1, parseInt(a.step, 10) || st.step)), ev: ["transferred", "booked", "hangup"].includes(a.event) ? a.event : "none", patience: a.patience ?? null, objection: a.objection || null }; } catch { /* ignore */ } }
+        if (text || tag) st.turns.push({ side: "them", who: st.who, text, patience: tag?.patience ?? null, objection: tag?.objection || null, tag: tag ? { who: tag.who, step: tag.step, ev: tag.ev } : null });
+        if (tag) { st.step = tag.step; st.reached = Math.max(st.reached, tag.step); if (tag.ev === "transferred") st.who = "dm"; else st.who = sc.gk ? tag.who : "dm"; }
+      }
+    }
+    // the last user line is the one we're answering now: leave it for handleTurn
+    if (messages.at(-1)?.role === "user") { users--; const last = st.turns.at(-1); if (last && (last.side === "rep" || last.side === "note")) st.turns.pop(); }
+    st.elUserCount = users;
+    if (dr.who === "dm") st.who = "dm";
+    return st;
   }
   function finish(res, body, text, _tag) {
     if (body.stream !== false) {
