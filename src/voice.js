@@ -17,7 +17,7 @@ export const TRANSFER_NOTE = "[Your front desk just put the Levitate caller thro
 export function createVoice({ client, elevenKey, elevenBase, onVercel, port, prospectModel, prospectEffort, prospectThinking, fallback,
   toMessages, cleanTurns, cleanMeta, limit, clean, slug, num }) {
   const publicUrl = (process.env.PUBLIC_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "")).replace(/\/$/, "");
-  const ttsModel = process.env.ELEVENLABS_AGENT_TTS_MODEL || "eleven_flash_v2_5";
+  const ttsModel = process.env.ELEVENLABS_AGENT_TTS_MODEL || "eleven_turbo_v2";   // English agents take turbo v2 or flash v2
   const secret = elevenKey ? createHmac("sha256", elevenKey).update("dialroom-custom-llm").digest("hex").slice(0, 40) : "";
   const llmUrl = publicUrl ? `${publicUrl}/api/voice/llm/${secret}` : "";
   // The live stack needs a public HTTPS address ElevenLabs can call, a key, and shared state on Vercel.
@@ -141,7 +141,8 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
       });
     } catch (e) {
       console.error("voice session:", e.message);
-      res.status(502).json({ code: "voice_failed", message: e.status === 401 ? "ElevenLabs refused the key: it needs Agents access." : "Couldn't start the voice session." });
+      const detail = String(e.message || "").replace(/^ElevenLabs \d+ \S+: /, "").slice(0, 160);
+      res.status(502).json({ code: "voice_failed", message: e.status === 401 ? "ElevenLabs refused the key: it needs Agents access." : "Couldn't start the voice session: " + detail });
     }
   });
 

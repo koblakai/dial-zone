@@ -21,7 +21,7 @@ Open it in **Chrome or Edge** (they have built-in speech recognition), allow the
 | `PROSPECT_MODEL` / `GRADER_MODEL` | no | Default `claude-opus-5-5`. A faster model (e.g. `claude-sonnet-5-5`) cuts response time. |
 | `PROSPECT_EFFORT` / `GRADER_EFFORT` | no | Defaults `low` (snappy replies) and `high` (a careful teardown). |
 | `PROSPECT_THINKING` | no | `off` turns the prospect's thinking off for the fastest first word; only works with `PROSPECT_MODEL=claude-sonnet-5-5`. |
-| `ELEVENLABS_MODEL` | no | Default `eleven_turbo_v2_5`. `eleven_flash_v2_5` is faster and rougher; `eleven_multilingual_v2` smoother and slower. |
+| `ELEVENLABS_MODEL` | no | Voice model for the fallback pipeline. Default `eleven_turbo_v2_5`. |
 | `APP_PASSWORD` | no | Require a password (any username) to open the app. Setting it also makes the server listen on all interfaces so others can reach it. |
 | `HOST` | no | Interface to listen on. Default `127.0.0.1` (this machine only) unless `APP_PASSWORD` is set. |
 | `LOG_LATENCY` | no | Set to `1` to log time-to-first-word for each prospect reply. |
@@ -36,7 +36,7 @@ It turns on when all of these hold:
 - The server has a public HTTPS address ElevenLabs can call for replies: `PUBLIC_URL`, or on Vercel the production domain automatically.
 - Recommended on Vercel: a **Blob store** connected to the project (`BLOB_READ_WRITE_TOKEN`). Without it, call state is held in the running instance, which works while one warm instance serves the call (normal for a single caller) but can drop a call if Vercel switches instances mid-call.
 
-`GET /api/voice/status` says whether it is on and, if not, why. `VOICE_STACK=off` forces the fallback. `ELEVENLABS_AGENT_TTS_MODEL` picks the agent's voice model (default `eleven_flash_v2_5`; `eleven_v3_conversational` or `eleven_multilingual_v2` are smoother and slower). The agent is created and kept up to date automatically under the name "The Dial Room prospect"; it requires a session token from this server, so nobody can talk to it without the app. ElevenLabs bills agent conversations per minute.
+`GET /api/voice/status` says whether it is on and, if not, why. `VOICE_STACK=off` forces the fallback. `ELEVENLABS_AGENT_TTS_MODEL` picks the agent's voice model (default `eleven_turbo_v2`; `eleven_flash_v2` is faster and rougher). The agent is created and kept up to date automatically under the name "The Dial Room prospect"; it requires a session token from this server, so nobody can talk to it without the app. ElevenLabs bills agent conversations per minute.
 
 ## Hosted on Vercel
 
