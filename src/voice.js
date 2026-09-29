@@ -188,7 +188,9 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   async function handleTurn(req, res) {
     if (!secret || req.params.secret !== secret) return res.status(404).end();
     const body = req.body || {};
-    const dr = body.dialroom || body.custom_llm_extra_body?.dialroom || body.extra_body?.dialroom || null;
+    // ElevenLabs delivers the browser's customLlmExtraBody under `elevenlabs_extra_body` (seen in production logs).
+    const extra = body.elevenlabs_extra_body ?? body.custom_llm_extra_body ?? body.extra_body ?? null;
+    const dr = body.dialroom || extra?.dialroom || null;
     const callId = dr?.callId || "";
     let state = callId ? await loadState(String(callId).slice(0, 40)) : null;
     const toolsOffered = (body.tools || []).some((t) => (t?.function?.name || t?.name) === "dialroom_state");
@@ -199,7 +201,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
       // What ElevenLabs actually sends (shape only, no transcript): the one thing the docs never showed us.
       const shape = { keys: Object.keys(body), callId: callId || null, found: !!state, store: STORE_KIND,
         tools: Array.isArray(body.tools) ? body.tools.map((t) => t?.function?.name || t?.name || t?.type) : undefined,
-        extra: body.custom_llm_extra_body ?? body.extra_body ?? null, dyn: body.dynamic_variables ?? null,
+        extra, dyn: body.dynamic_variables ?? null,
         messages: (body.messages || []).map((m) => m.role + ":" + textOf(m.content).slice(0, 40).replace(/\n/g, " ")) };
       console.log("voice llm request", JSON.stringify(shape).slice(0, 1500));
     }

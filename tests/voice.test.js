@@ -87,7 +87,8 @@ test("a call: session, greeting, a rep line with its delivery note, transfer, pi
 test("without the store, a call is rebuilt from ElevenLabs' history and the tag rides back as a tool call", async () => {
   const dr = { callId: "vghost", scenarioId: "meridian", diff: 3, who: "gatekeeper", seed: "s" };
   const tools = [{ type: "function", function: { name: "dialroom_state", parameters: {} } }];
-  const llm = (msgs) => post(`/api/voice/llm/${secret}/chat/completions`, { model: "dialroom", stream: true, messages: msgs, dialroom: dr, tools });
+  // the extra body arrives the way ElevenLabs really sends it: nested under elevenlabs_extra_body
+  const llm = (msgs) => post(`/api/voice/llm/${secret}/chat/completions`, { model: "dialroom", stream: true, messages: msgs, elevenlabs_extra_body: { dialroom: dr }, tools });
   // greeting: no state anywhere, only the extra body
   let r = await llm([{ role: "user", content: "[pickup]" }]);
   let text = await r.text();
