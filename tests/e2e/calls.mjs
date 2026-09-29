@@ -33,12 +33,14 @@ try{
     await p.evaluate(()=>__speak("Hey it's Sam I needed to speak with Dr Marsh is he in between patients".split(" "),120,1600));
     await waitText(/what this is regarding/);
     await p.waitForTimeout(2500);
-    ok(await count(/I needed to speak with Dr Marsh/g)===1, "late final does not duplicate the rep line (count="+await count(/I needed to speak with Dr Marsh/g)+")");
-    ok((await p.evaluate(()=>window.__sessions))>=2, "unfinished words at end of turn restart the recognition session");
+    ok(await count(/I needed to speak with Dr\. Marsh/g)===1, "the turn waits for the late final and shows it once, name spelled right (count="+await count(/I needed to speak with Dr\.? Marsh/g)+")");
+    ok((await p.evaluate(()=>window.__sessions))===1, "a final that arrives in time needs no recognizer restart");
     await waitListening();
-    await p.evaluate(()=>__speak("It's Sam calling from Levitate".split(" "),[120,650,120,120,120]));
+    // a final that never comes in time (2.6 s): the turn goes out on the interim words and the session restarts
+    await p.evaluate(()=>__speak("It's Sam calling from Levitate".split(" "),[120,650,120,120,120],2600));
     await waitText(/put you through/);
     ok(!/Go on/.test(await stage()),"mid-sentence pause: no stray speculative reply");
+    ok((await p.evaluate(()=>window.__sessions))>=2, "unfinished words at end of turn restart the recognition session");
     // retry while the transfer line plays: transfer must be cancelled
     await p.keyboard.press("r");
     await p.waitForTimeout(4500);
