@@ -8,7 +8,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "check": "node --check server.js && node --check src/app.js && node --check public/app.js && node --check public/framework.js && node --check public/phone.js",
-    "test": "node --test tests/unit.test.js tests/voice.test.js",
+    "test": "node --test tests/unit.test.js tests/voice.test.js tests/store.test.js",
     "test:e2e": "node tests/e2e/run.mjs"
   },
   "engines": {
