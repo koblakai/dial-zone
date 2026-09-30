@@ -34,7 +34,7 @@ import * as vc from "./voicecall.js";
     deadAir:null, silences:0, callCtl:null,
     lineCheck:{busy:false,text:"",dot:""},
     view:"contacts", pane:"list", filter:"all", query:"", dial:"", padOpen:false,
-    cfg:{brain:true,tts:"browser",voice:"pipeline"},
+    cfg:{brain:true,tts:"browser",voice:"pipeline"}, cfgReady:false,   // nothing is dialed until the server has said what it offers
     agent:null            // the live-voice session (ElevenLabs) when cfg.voice is "agent"
   };
   const $=(s)=>document.querySelector(s);
@@ -411,7 +411,7 @@ import * as vc from "./voicecall.js";
     line.appendChild(el("span","dot "+micDot)); line.appendChild(el("span","",micText));
     line.appendChild(el("span","hint","·"));
     line.appendChild(el("span","dot "+(voiceOK()?"ok":"bad")));
-    line.appendChild(el("span","",S.cfg.voice==="agent"?"Live voice — ElevenLabs on the line":premium()?"Studio voices on":voiceOK()?"Browser voices":"No voice out here"));
+    line.appendChild(el("span","",!S.cfgReady?"Connecting to the server…":S.cfg.voice==="agent"?"Live voice — ElevenLabs on the line":premium()?"Studio voices on":voiceOK()?"Browser voices":"No voice out here"));
     set.appendChild(line);
     const test=el("button","ghostbtn"); test.type="button"; test.append(icon("mic"),el("span","",lc.busy?"Testing…":"Test the line"));
     test.disabled=lc.busy;
@@ -928,6 +928,10 @@ import * as vc from "./voicecall.js";
 
   /* ================= the call ================= */
   function startCall(){
+    if(!S.cfgReady){                                   // the config fetch failed (an expired sign-in, a blip): ask again before dialing anything
+      (async()=>{ if(await loadConfig()) startCall(); else { beat("Couldn’t reach the server. Reload the page and sign in again.","dir"); renderCall(); } })();
+      return;
+    }
     if(S.cfg.voice==="agent") return startAgentCall();
     try{ TTS&&TTS.cancel(); }catch(e){}
     phone.stopPlayback();
@@ -1804,11 +1808,16 @@ import * as vc from "./voicecall.js";
   /* ================= boot ================= */
   renderSide(); renderSetup(); renderRail(); paintBoard();
 
-  (async function(){
+  async function loadConfig(){
     try{
-      const r=await fetch("api/config");
-      if(r.ok){ S.cfg={...S.cfg,...(await r.json())}; renderSetup(); }
+      const r=await fetch("api/config",{cache:"no-store"});
+      if(r.ok){ S.cfg={...S.cfg,...(await r.json())}; S.cfgReady=true; renderSetup(); return true; }
     }catch(e){}
+    return false;
+  }
+  (async function(){                                   // a 401 or a blip at load must not leave the app on its fallback defaults
+    for(let i=0;i<6&&!(await loadConfig());i++) await new Promise(r=>setTimeout(r,700*(i+1)));
+    renderSetup();
   })();
   (async function(){
     try{
