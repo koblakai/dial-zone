@@ -929,7 +929,9 @@ import * as vc from "./voicecall.js";
   /* ================= the call ================= */
   function startCall(){
     if(!S.cfgReady){                                   // the config fetch failed (an expired sign-in, a blip): ask again before dialing anything
-      (async()=>{ if(await loadConfig()) startCall(); else { beat("Couldn’t reach the server. Reload the page and sign in again.","dir"); renderCall(); } })();
+      if(S.dialing) return;                            // one tap is enough while we ask
+      S.dialing=true;
+      (async()=>{ const ok=await loadConfig(); S.dialing=false; if(ok) startCall(); else { beat("Couldn’t reach the server. Reload the page and sign in again.","dir"); renderCall(); } })();
       return;
     }
     if(S.cfg.voice==="agent") return startAgentCall();

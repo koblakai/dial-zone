@@ -446,3 +446,18 @@ test("a front desk that handles it herself stays the front desk: a dm tag withou
   const st = await stateOf(callId);
   assert.equal(st.who, "gatekeeper"); assert.equal(st.step, 2); assert.equal(st.turns.at(-1).who, "gatekeeper");
 });
+
+test("a transfer reply that commits after the doctor has already picked up keeps its place and its tag", async () => {
+  const { callId, llm, H } = await openCall();
+  await slow(900);
+  const F = llm([...H, { role: "user", content: "It's Sam from Levitate" }]); await settle(200);   // the transfer reply, still generating
+  await slow(0);
+  await post("/api/voice/session", { scenarioId: "meridian", diff: 3, callId, transfer: true });
+  const d = await deltasOf(await llmFor(callId, { session: 2 })([{ role: "user", content: TRANSFER }])); await settle();   // the doctor answers first
+  assert.match(spokenOf(d), /This is Evan/);
+  assert.match(spokenOf(await deltasOf(await F)), /put you through/); await settle();
+  const st = await store.loadState(callId);
+  assert.deepEqual(st.turns.map((t) => t.side + (t.tag ? ":" + t.tag.ev : "")), ["them:none", "rep", "them:transferred", "note", "them:none"]);
+  assert.equal(st.turns[2].cut, false); assert.equal(st.turns[2].who, "gatekeeper");
+  assert.deepEqual([st.who, st.busy, st.inflight, st.pendingEvent], ["dm", false, null, null]);
+});

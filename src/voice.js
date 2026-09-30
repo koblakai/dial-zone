@@ -492,13 +492,14 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
         let ev = tag ? tag[3].toLowerCase() : "none";
         const pat = tag && tag[4] != null ? Math.min(10, Math.max(0, parseInt(tag[4], 10))) : null;
         const obj = tag ? slug(tag[5]) : null;
-        if (!mine) {                                           // the rep's next line took the lease: keep what was said as the cut line it was
+        const moved = (st.sessions || 1) > sessionThen;        // the transfer this reply announced has already happened
+        const late = !mine && moved;                             // and the new session's first line already holds the lease: leave it alone
+        if (!mine && !late) {                                  // the rep's next line took the lease: keep what was said as the cut line it was
           const i = st.turns.findIndex((t, k) => t.side === "rep" && k + 1 < st.turns.length && st.turns[k + 1].side !== "them");
           if (!aborted && spoken && i >= 0) st.turns.splice(i + 1, 0, { side: "them", who: whoThen, text: spoken, cut: true, patience: pat, objection: obj, tag: null, at: done, reqId, session: sessionThen });
           return;
         }
-        const moved = (st.sessions || 1) > sessionThen;        // the transfer this reply announced has already happened
-        st.busy = false; st.inflight = null;
+        if (!late) { st.busy = false; st.inflight = null; }
         const pc = st.pendingCut; st.pendingCut = null;        // a barge-in the browser reported while this reply was still generating
         const cutTo = pc && pc.reqId === reqId && done - pc.at < META_TTL_MS && pc.text && norm(aborted ? partialText : spoken).startsWith(norm(pc.text)) ? pc.text : null;
         if (aborted) { st.partial = { n, text: cutTo || partialText, at: done, reqId }; return; }   // ElevenLabs did not take this reply
@@ -506,8 +507,12 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
         if (ev === "transferred" && (whoThen !== "gatekeeper" || !sc.gk)) ev = "none";
         if (pat === 0 && ev === "none") ev = "hangup";
         if (ev === "hangup" && obj === "rep-ended") ev = "rep-ended";
-        if (spoken || ev !== "none") st.turns.push({ side: "them", who: whoThen, text: cutTo && cutTo.length < spoken.length ? cutTo : spoken, cut: !!cutTo, patience: pat,
-          objection: ev === "rep-ended" ? null : obj, tag: tag ? { who, step: stp, ev: ev === "rep-ended" ? "hangup" : ev } : null, at: done, reqId, session: sessionThen });
+        if (spoken || ev !== "none") {
+          const turn = { side: "them", who: whoThen, text: cutTo && cutTo.length < spoken.length ? cutTo : spoken, cut: !!cutTo, patience: pat,
+            objection: ev === "rep-ended" ? null : obj, tag: tag ? { who, step: stp, ev: ev === "rep-ended" ? "hangup" : ev } : null, at: done, reqId, session: sessionThen };
+          const after = moved ? st.turns.findIndex((t, k) => t.side === "rep" && t.session === sessionThen && k + 1 < st.turns.length && st.turns[k + 1].side !== "them") : -1;
+          if (after >= 0) st.turns.splice(after + 1, 0, turn); else st.turns.push(turn);   // a late transfer reply sits after the line it answered
+        }
         st.reached = Math.max(st.reached, stp);
         if (moved) return;                                     // who is on the line and the step were reset for the new session
         st.step = stp;                                         // the tag's `who` is advisory: a front desk that "handles this" stays the front desk until a transfer
@@ -540,7 +545,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
         let tag = null;
         if (tc) { try { const a = JSON.parse(tc.function.arguments || "{}"); tag = { who: a.who === "dm" ? "dm" : "gatekeeper", step: Math.min(5, Math.max(1, parseInt(a.step, 10) || st.step)), ev: ["transferred", "booked", "hangup"].includes(a.event) ? a.event : "none", patience: a.patience ?? null, objection: a.objection || null }; } catch { /* ignore */ } }
         if (text || tag) st.turns.push({ side: "them", who: st.who, text, patience: tag?.patience ?? null, objection: tag?.objection || null, tag: tag ? { who: tag.who, step: tag.step, ev: tag.ev } : null });
-        if (tag) { st.step = tag.step; st.reached = Math.max(st.reached, tag.step); if (tag.ev === "transferred") st.who = "dm"; else st.who = sc.gk ? tag.who : "dm"; }
+        if (tag) { st.step = tag.step; st.reached = Math.max(st.reached, tag.step); if (tag.ev === "transferred") st.who = "dm"; }   // who changes only through a transfer
       }
     }
     // the last user line is the one we're answering now: leave it for handleTurn
