@@ -237,7 +237,7 @@ export default [
     gkVoice: "",
     open: "dm",
     gkVoiceId: "",
-    dmVoiceId: "pqHfZKP75CvOlQylNhV4",
+    dmVoiceId: "nPczCjzI2devNBz1zQrb",
     persona: [
       "NO GATEKEEPER. Dr. Brennan answers his own line between patients, so who is always dm and your first reply is step 2. He is slow to warm up, lets a pause sit, and wants to know in one sentence why you called.",
       "",
@@ -573,7 +573,7 @@ export default [
     open: "gatekeeper",
     gkBooks: true,
     gkVoiceId: "21m00Tcm4TlvDq8ikWAM",
-    dmVoiceId: "pqHfZKP75CvOlQylNhV4",
+    dmVoiceId: "CwhRBWXzGAHq8TQ4Fs17",
     persona: [
       "GATEKEEPER: Simone, spa director, early forties. Poised, businesslike, a little Texas warmth; came up through resort spas in Houston and runs Cypress Row by the numbers. She answers the main line when the desk is swamped and tells vendors who ask for Dr. Pryor, politely, that she runs it; only a vendor who keeps pushing past that tries her patience.",
       "Answers: \"Cypress Row, this is Simone.\"",
