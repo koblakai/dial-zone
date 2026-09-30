@@ -288,7 +288,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   // Who is on the line and which step the rep is on follow the last tagged reply; recomputed after one is dropped.
   function resync(st, sc) {
     const last = [...st.turns].reverse().find((t) => t.side === "them" && t.tag);
-    if (last) { st.who = sc.gk ? last.tag.who : "dm"; st.step = last.tag.step; }
+    if (last) st.step = last.tag.step;                       // who is on the line changes only through a transfer, never through a tag
   }
 
   // Mutate the state for a decision that goes on to generate a reply; false when nothing is written.
@@ -510,7 +510,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
           objection: ev === "rep-ended" ? null : obj, tag: tag ? { who, step: stp, ev: ev === "rep-ended" ? "hangup" : ev } : null, at: done, reqId, session: sessionThen });
         st.reached = Math.max(st.reached, stp);
         if (moved) return;                                     // who is on the line and the step were reset for the new session
-        st.who = sc.gk ? who : "dm"; st.step = stp;
+        st.step = stp;                                         // the tag's `who` is advisory: a front desk that "handles this" stays the front desk until a transfer
         if (ev === "transferred") st.pendingEvent = "transferred";
         else if (ev !== "none") { st.ended = true; st.outcome = ev === "rep-ended" ? "wrapped" : ev; }
         st.lastReplyAt = done; st.lastAgentEnd = Math.max(st.lastAgentEnd || 0, done);

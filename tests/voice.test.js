@@ -438,3 +438,11 @@ test("a transfer the browser reports before the transfer reply has been recorded
   st = await stateOf(callId);
   assert.deepEqual(st.turns.map((t) => t.side), ["them", "rep", "them", "note", "them"], "the pickup cue is a hidden note"); assert.equal(st.turns.at(-1).who, "dm"); assert.equal(notesIn(st).length, 0);
 });
+
+test("a front desk that handles it herself stays the front desk: a dm tag without a transfer changes nothing", async () => {
+  const { callId, llm, H } = await openCall();
+  const d = await deltasOf(await llm([...H, { role: "user", content: "Do you handle this or should I ask, I handle this myself you said?" }])); await settle();
+  assert.match(spokenOf(d), /ask me/);
+  const st = await stateOf(callId);
+  assert.equal(st.who, "gatekeeper"); assert.equal(st.step, 2); assert.equal(st.turns.at(-1).who, "gatekeeper");
+});

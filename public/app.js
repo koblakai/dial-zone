@@ -1004,7 +1004,7 @@ import * as vc from "./voicecall.js";
       state:(p)=>{ if(!live()) return;                   // the reply's control tag, straight from the line
         const st=a.state||{turns:[],ended:false,outcome:null,pendingEvent:null};
         const ev=String(p.event||"none");
-        st.who=p.who==="dm"?"dm":(S.scen.gk?"gatekeeper":"dm"); st.step=Math.min(5,Math.max(1,parseInt(p.step,10)||S.step)); st.reached=Math.max(st.reached||1,st.step);
+        st.who=S.who; st.step=Math.min(5,Math.max(1,parseInt(p.step,10)||S.step)); st.reached=Math.max(st.reached||1,st.step);   // the speaker changes only with a transfer
         if(ev==="transferred"&&S.who==="gatekeeper"&&!a.transferDone) st.pendingEvent="transferred";
         else if(ev==="hangup"||ev==="booked"||ev==="rep-ended"||p.patience===0){ st.ended=true; st.outcome=p.objection==="rep-ended"?"wrapped":(ev==="none"?"hangup":ev==="rep-ended"?"wrapped":ev); }
         const lt=[...a.local].reverse().find(t=>t.side==="them"); if(lt){ lt.patience=p.patience??null; lt.objection=p.objection&&p.objection!=="none"?p.objection:null; }

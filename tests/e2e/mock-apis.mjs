@@ -13,6 +13,7 @@ function reply(body){
   const L=typeof last==="string"?last:JSON.stringify(last);
   if(/\[silence/.test(L)) return "Hello? Anyone there?\n[[gatekeeper|1|none|5|none]]";
   if(/tag only please/.test(L)) return "[[gatekeeper|1|none|6|none]]";       // nothing to say out loud: the server must not go silent
+  if(/i handle this myself/i.test(L)) return "I handle the vendors myself, so ask me.\n[[dm|2|none|7|none]]";   // a front desk with authority, mis-tagged as the doctor
   if(/put the Levitate caller through to you/.test(L)) return "This is Evan.\n[[dm|2|none|7|none]]";
   if(/fillers \(/.test(L) && /[3-9] fillers/.test(L)) return "I'm going to stop you there. We're all set, thanks.\n[[dm|2|hangup|0|not-interested]]";
   if(/Levitate/.test(L)) return "Okay, one moment, I'll put you through.\n[[dm|1|transferred|7|none]]";
