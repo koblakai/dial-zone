@@ -38,6 +38,10 @@ It turns on when all of these hold:
 
 `GET /api/voice/status` says whether it is on and, if not, why. `VOICE_STACK=off` forces the fallback. `ELEVENLABS_AGENT_TTS_MODEL` picks the agent's voice model (default `eleven_turbo_v2`; `eleven_flash_v2` is faster and rougher). The agent is created and kept up to date automatically under the name "The Dial Room prospect"; it requires a session token from this server, so nobody can talk to it without the app. ElevenLabs bills agent conversations per minute.
 
+### Reading a call
+
+Every request ElevenLabs makes to the reply endpoint logs one `voice turn` line (no transcript): the request id, how many user messages it carried (`n`) against how many were already answered (`el`), the role of its last message (`tail`), the decision (`new`, `revised`, `retry`, `wait`, `replay`, `continuation`, `silence`, `ended`), time to first word and in total, and the control tag. The same record is kept on the call's state row (`log`, last 40) and every turn carries the `reqId` that produced it and an `at` timestamp, so a call can be reconstructed from the Vercel log joined to the row. A request with no new words is never assumed to be dead air: a tool follow-up or a re-ask right after we spoke gets nothing or the same reply again, and only a gap longer than the turn timeout, measured from the end of the prospect's speech, becomes a silence note. `LOG_VOICE=1` additionally logs the shape of each request (message roles plus the first 40 characters of each message).
+
 ## Hosted on Vercel
 
 `main` deploys automatically to the Vercel project **dial-room** (Express preset; `server.js` exports the app). Set `ANTHROPIC_API_KEY` and `APP_PASSWORD` in the project's Environment Variables, then redeploy. On Vercel the call log lives in `/tmp`, so it's temporary and per instance.

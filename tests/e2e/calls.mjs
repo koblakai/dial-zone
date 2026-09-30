@@ -35,8 +35,23 @@ try{
     await waitText(/what this is regarding/);
     ok(await count(/I needed to speak with Dr Marsh/g)===1,"the rep's line shows once");
     await p.waitForTimeout(2200);
-    await p.evaluate(()=>__agentSpeak("It's Sam calling from Levitate".split(" ")));
-    await waitText(/put you through/);
+    // ElevenLabs threw the reply away and asks again with the same history: said once more, shown once, no dead air
+    await p.evaluate(()=>__agentReplay()); await p.waitForTimeout(1200);
+    ok(await count(/what this is regarding/g)===1&&!/Dead air/.test(await stage()),"a re-asked history replays the reply: no dead air");
+    // a follow-up that ends on the prospect's own message adds nothing
+    await p.evaluate(()=>__agentContinue()); await p.waitForTimeout(800);
+    ok(await count(/what this is regarding/g)===1&&!/Dead air/.test(await stage()),"a bare follow-up adds nothing");
+    // a reply that arrives too late is dropped and asked for again: the answer shows once, quickly
+    await p.evaluate(()=>{ window.__agentDropNext=true; });
+    await p.evaluate(()=>__agentSpeak("sorry is Dr Marsh available".split(" ")));
+    await waitText(/what this is regarding\?[\s\S]*what this is regarding\?/,8000);
+    await p.waitForTimeout(1500);
+    ok(await count(/what this is regarding/g)===2&&!/Dead air/.test(await stage()),"a dropped reply is replayed once, no dead air");
+    await p.waitForTimeout(2200);
+    // a speculative end of turn, then the full line: one rep line, the full text, and the transfer that follows
+    await p.evaluate(()=>__agentSpeculate("It's Sam".split(" "),"calling from Levitate".split(" ")));
+    await waitText(/put you through/); await p.waitForTimeout(1000);   // let the browser catch up with the server's record
+    ok(await count(/It's Sam calling from Levitate/g)===1&&await count(/It's Sam/g)===1,"a revised transcript shows once, in full");
     await waitText(/This is Evan/,25000);
     const second=await p.evaluate(()=>window.__agentSessions[1]&&window.__agentSessions[1].opts);
     ok(!!second&&second.overrides?.tts?.voiceId==="iP95p4xoKVk53GoZ742B","transfer: a second session in the doctor's voice");
@@ -49,6 +64,7 @@ try{
     ok(true,"hesitant rep -> hang up ends the live session");
     ok(await p.evaluate(()=>window.__agentSessions.every(s=>!s.open)),"every session closed");
     ok((await p.evaluate(()=>window.__toolCalls||0))>=4,"every reply carried its state as a tool call ("+await p.evaluate(()=>window.__toolCalls||0)+")");
+    ok(!/Dead air/.test(await stage()),"no dead air was ever charged to the rep");
     const log=await (await fetch(mockUrl+"/__log")).json();
     const llm=log.filter(x=>x.body?.messages).map(x=>x.body.messages.at(-1).content);
     ok(llm.some(c=>/\[delivery: .*fillers/.test(c)),"the prospect got a delivery reading with the fillers");

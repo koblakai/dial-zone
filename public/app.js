@@ -954,7 +954,7 @@ import * as vc from "./voicecall.js";
   function agentConvoCount(){ return S.turns.filter(t=>t.side!=="beat").length; }
 
   /* ================= live voice (ElevenLabs on the line, Claude behind it) ================= */
-  const AGENT_DEAD_AIR_MS=6000, AGENT_POLL_MS=800;
+  const AGENT_DEAD_AIR_MS=6000, AGENT_QUIET_AFTER_TALK_MS=10000, AGENT_POLL_MS=800;
   async function startAgentCall(){
     phone.stopPlayback(); unlockAudio();
     cancelEvent();
@@ -992,9 +992,10 @@ import * as vc from "./voicecall.js";
     const mine={}; a.session=mine;                    // events from an earlier session on this call are ignored
     const live=()=>S.agent===a&&a.session===mine;
     return vc.openSession({token:sess.token,overrides:sess.overrides,extraBody:sess.extraBody,on:{
-      them:(text)=>{ if(!live()) return; text=String(text||"").trim(); a.local.push({side:"them",who:S.who,text}); S.busy=false; renderAgentTurns(a); setTimeout(()=>agentPoll(a),150); },
+      them:(text)=>{ if(!live()) return; text=String(text||"").trim(); if(!text) return;   // an empty follow-up is not a line
+        a.local.push({side:"them",who:S.who,text}); S.busy=false; renderAgentTurns(a); setTimeout(()=>agentPoll(a),150); },
       rep:(text)=>{ if(!live()) return; const meta=a.meter.take(text); clearTimeout(a.quiet);
-        vc.api("/"+a.callId+"/note",{kind:"delivery",meta}).catch(()=>{});
+        vc.api("/"+a.callId+"/note",{kind:"delivery",meta,text}).catch(()=>{});   // the text names the line this reading belongs to
         a.local.push({side:"rep",text,meta}); S.busy=true; renderAgentTurns(a); },
       state:(p)=>{ if(!live()) return;                   // the reply's control tag, straight from the line
         const st=a.state||{turns:[],ended:false,outcome:null,pendingEvent:null};
@@ -1009,8 +1010,9 @@ import * as vc from "./voicecall.js";
       mode:(mode)=>{ if(!live()) return; a.meter.agentMode(mode);
         S.speaking=mode==="speaking"; S.audible=S.speaking; if(S.speaking) S.busy=false;
         paintState();
-        if(mode==="listening"){ S.lastSpokeEnd=Date.now(); agentArmQuiet(a); agentCheckEvents(a); } else clearTimeout(a.quiet); },
-      vad:(score)=>{ if(!live()) return; a.meter.vad(score); if(score>=0.5){ clearTimeout(a.quiet); a.quiet=null; if(!a.talking){ a.talking=true; updateMouth(); } } else if(a.talking){ a.talking=false; updateMouth(); } },
+        if(mode==="listening"){ S.lastSpokeEnd=Date.now(); vc.api("/"+a.callId+"/note",{kind:"agentEnd"}).catch(()=>{}); agentArmQuiet(a); agentCheckEvents(a); } else clearTimeout(a.quiet); },
+      vad:(score)=>{ if(!live()) return; a.meter.vad(score); if(score>=0.5){ clearTimeout(a.quiet); a.quiet=null; if(!a.talking){ a.talking=true; updateMouth(); } }
+        else if(a.talking){ a.talking=false; updateMouth(); a.quietFrom=Date.now(); agentArmQuiet(a,AGENT_QUIET_AFTER_TALK_MS); } },   // the rep stopped: a long fuse, since their line may still be on its way
       ended:()=>{ if(!live()||a.closing) return;
         a.closing=true; beat("The line dropped.","dir"); endCall("hungup"); },
       error:(m)=>{ if(!live()) return; flash(String(m||"Line error").slice(0,80)); }
@@ -1076,19 +1078,21 @@ import * as vc from "./voicecall.js";
       }catch(e){ if(S.agent!==a) return; S.ringing=false; beat("The transfer dropped.","dir"); endCall("hungup"); }
     }
   }
-  function agentArmQuiet(a){
-    clearTimeout(a.quiet);
+  function agentArmQuiet(a,ms=AGENT_DEAD_AIR_MS){
+    clearTimeout(a.quiet); if(ms===AGENT_DEAD_AIR_MS) a.quietFrom=0;
     a.quiet=setTimeout(()=>{
       a.quiet=null;
       if(S.agent!==a||S.phase!=="live"||S.speaking||S.busy||a.meter.speaking()||a.acting) return;
       if($("#say").value.trim()) return;
-      S.silences++; const secs=Math.round(AGENT_DEAD_AIR_MS/1000);
+      const srv=a.state, lastTurn=[...S.turns].reverse().find(t=>t.side==="rep"||t.side==="them");
+      if((srv&&srv.busy)||(lastTurn&&lastTurn.side==="rep")) return;      // a line was heard and is still being answered: not dead air
+      S.silences++; const secs=Math.max(1,Math.round((Date.now()-Math.max(S.lastSpokeEnd||0,a.quietFrom||0))/1000));   // measured since whoever spoke last stopped
       a.conv.sendUserMessage("[silence: the rep has said nothing for "+secs+" seconds]"); S.busy=true; paintState();
-    },AGENT_DEAD_AIR_MS);
+    },ms);
   }
   function agentSendText(text){
     const a=S.agent; if(!a||!a.conv) return;
-    vc.api("/"+a.callId+"/note",{kind:"delivery",meta:{typed:true}}).catch(()=>{});
+    vc.api("/"+a.callId+"/note",{kind:"delivery",meta:{typed:true},text}).catch(()=>{});
     a.conv.sendUserMessage(text); a.local.push({side:"rep",text,meta:{typed:true}});
     $("#say").value=""; S.busy=true; renderAgentTurns(a); paintState();
   }
