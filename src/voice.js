@@ -196,7 +196,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   const isNote = (u) => /^\[[\s\S]*\]$/.test(u);
   const wordsIn = (s) => String(s || "").split(/\s+/).filter(Boolean).length;
   const GATE_MS = (TURN_TIMEOUT_S - 2) * 1000;   // a same-history request sooner than this after we spoke is a replay or a follow-up, never silence
-  const RETRY_WAIT_MS = 3500;                    // how long a retry waits for the reply another instance is still generating
+  const RETRY_WAIT_MS = 15000;                   // a re-ask waits for the reply already being generated: a fresh generation would only restart the clock
   const META_TTL_MS = 15000;                     // a delivery reading older than this belongs to no line
   const EMPTY_REPLY = "Sorry, say that again?";  // when the model returns a tag and nothing to say out loud
   const LOG_KEEP = 40;
