@@ -129,7 +129,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
     if (!sc) return res.status(400).json({ code: "bad_request", message: "Unknown scenario." });
     const diff = Math.min(5, Math.max(1, parseInt(req.body?.diff, 10) || 3));
     let state = req.body?.callId ? await loadState(String(req.body.callId).slice(0, 40)) : null;
-    const transfer = !!state && state.pendingEvent === "transferred";
+    const transfer = !!state && (state.pendingEvent === "transferred" || req.body?.transfer === true);
     try {
       const agentId = await ensureAgent();
       const tok = await el(`/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`);
@@ -140,7 +140,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
         await saveState(state.id, state);
       } else {
         state = (await updateState(state.id, (st) => {           // a live row is only ever changed under compare-and-set
-          if (transfer) { st.who = "dm"; st.pendingEvent = null; st.elUserCount = 0; st.busy = false; st.inflight = null; st.partial = null; st.pendingCut = null; }
+          if (transfer) { st.who = "dm"; st.pendingEvent = null; st.elUserCount = 0; st.partial = null; st.pendingCut = null; }   // the transfer reply may still be committing: its lease stays
           st.sessions = (st.sessions || 0) + 1;
         })) || state;
       }
@@ -255,6 +255,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
     const kept = (t) => t && t.side !== "them" && keep.has(norm(t.text));
     while (st.turns.length) {
       const t = st.turns.at(-1);
+      if (t.session && t.session < (st.sessions || 1)) break;   // an earlier session's record is not this session's to withdraw
       if (t.side === "them" ? (st.turns.length === 1 || kept(st.turns.at(-2))) : kept(t)) break;
       if (t.side === "them" && t.tag && t.tag.ev === "transferred") st.pendingEvent = null;   // the transfer it announced goes with it
       st.turns.pop();
@@ -276,7 +277,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
     const rep = lastRepTurn(st);
     if (lastUser && !isNote(lastUser) && rep && norm(rep.text) !== norm(lastUser)) {
       // a shorter transcript that is a prefix of the line we hold is the speculative cut arriving late: superseded
-      if (norm(rep.text).startsWith(norm(lastUser))) return { decision: "continuation", stale: true };
+      if (norm(rep.text).startsWith(norm(lastUser))) return { decision: "continuation", superseded: true };
       return { decision: "revised", rep, answered };
     }
     if (!answered) return busyElsewhere ? { decision: "wait", on: st.inflight.reqId } : { decision: "retry" };
@@ -293,7 +294,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
   // Mutate the state for a decision that goes on to generate a reply; false when nothing is written.
   function apply(st, plan, ctx) {
     const { n, users, reqId, now } = ctx;
-    const noteTurn = (u) => ({ side: "note", text: u, at: now, reqId,
+    const noteTurn = (u) => ({ side: "note", text: u, at: now, reqId, session: st.sessions || 1,
       shown: u === TRANSFER_NOTE ? "" : /^\[silence/.test(u) ? "Dead air — " + (u.match(/(\d+) seconds/)?.[1] || "6") + "s" : u });
     const lastIsNote = () => st.turns.length > 0 && st.turns.at(-1).side === "note";
     if (plan.decision === "new") {
@@ -308,7 +309,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
         else repLine = u;
       }
       st.elUserCount = n;
-      if (repLine) st.turns.push(...st.notes.splice(0), { side: "rep", text: repLine, meta: takeMeta(st, repLine), at: now, reqId });
+      if (repLine) st.turns.push(...st.notes.splice(0), { side: "rep", text: repLine, meta: takeMeta(st, repLine), at: now, reqId, session: st.sessions || 1 });
       else st.turns.push(...st.notes.splice(0));
     } else if (plan.decision === "revised") {                  // same turn, longer or corrected transcript
       plan.rep.text = users.at(-1); plan.rep.meta = plan.rep.meta || takeMeta(st, plan.rep.text);
@@ -388,7 +389,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
     }, { create: true });
     if (written) state = written;
 
-    if (plan.decision === "continuation") return silent(plan.stale ? "stale" : plan.ended ? "ended" : "continuation", { quietMs: plan.quiet ?? null });
+    if (plan.decision === "continuation") return silent(plan.stale ? "stale" : plan.superseded ? "superseded" : plan.ended ? "ended" : "continuation", { quietMs: plan.quiet ?? null });
     if (plan.decision === "replay") {                          // ElevenLabs dropped the reply we already made: say it again, verbatim
       finish(res, body, plan.turn.text, tagOf(plan.turn, state), toolsOffered);
       return logTurn("replay", { words: wordsIn(plan.turn.text) });
@@ -478,7 +479,7 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
     else finish(res, body, spoken, tagObj, toolsOffered);
 
     // Record the reply and apply its events, unless a retry took this line over while we were generating.
-    const done = Date.now();
+    const done = Date.now(), whoThen = state.who, sessionThen = state.sessions || 1;
     const stats = { ttftMs: firstAt ? firstAt - t0 : null, totalMs: done - t0, words: wordsIn(spoken), aborted, fallbackLine };
     const partialText = raw.replace(/\[\[[\s\S]*$/, "").trim();
     try {
@@ -493,20 +494,23 @@ export function createVoice({ client, elevenKey, elevenBase, onVercel, port, pro
         const obj = tag ? slug(tag[5]) : null;
         if (!mine) {                                           // the rep's next line took the lease: keep what was said as the cut line it was
           const i = st.turns.findIndex((t, k) => t.side === "rep" && k + 1 < st.turns.length && st.turns[k + 1].side !== "them");
-          if (!aborted && spoken && i >= 0) st.turns.splice(i + 1, 0, { side: "them", who: st.who, text: spoken, cut: true, patience: pat, objection: obj, tag: null, at: done, reqId });
+          if (!aborted && spoken && i >= 0) st.turns.splice(i + 1, 0, { side: "them", who: whoThen, text: spoken, cut: true, patience: pat, objection: obj, tag: null, at: done, reqId, session: sessionThen });
           return;
         }
+        const moved = (st.sessions || 1) > sessionThen;        // the transfer this reply announced has already happened
         st.busy = false; st.inflight = null;
         const pc = st.pendingCut; st.pendingCut = null;        // a barge-in the browser reported while this reply was still generating
         const cutTo = pc && pc.reqId === reqId && done - pc.at < META_TTL_MS && pc.text && norm(aborted ? partialText : spoken).startsWith(norm(pc.text)) ? pc.text : null;
         if (aborted) { st.partial = { n, text: cutTo || partialText, at: done, reqId }; return; }   // ElevenLabs did not take this reply
-        if (ev === "booked" && st.who !== "dm" && !sc.gkBooks) ev = "none";
-        if (ev === "transferred" && (st.who !== "gatekeeper" || !sc.gk)) ev = "none";
+        if (ev === "booked" && whoThen !== "dm" && !sc.gkBooks) ev = "none";
+        if (ev === "transferred" && (whoThen !== "gatekeeper" || !sc.gk)) ev = "none";
         if (pat === 0 && ev === "none") ev = "hangup";
         if (ev === "hangup" && obj === "rep-ended") ev = "rep-ended";
-        if (spoken || ev !== "none") st.turns.push({ side: "them", who: st.who, text: cutTo && cutTo.length < spoken.length ? cutTo : spoken, cut: !!cutTo, patience: pat,
-          objection: ev === "rep-ended" ? null : obj, tag: tag ? { who, step: stp, ev: ev === "rep-ended" ? "hangup" : ev } : null, at: done, reqId });
-        st.who = sc.gk ? who : "dm"; st.step = stp; st.reached = Math.max(st.reached, stp);
+        if (spoken || ev !== "none") st.turns.push({ side: "them", who: whoThen, text: cutTo && cutTo.length < spoken.length ? cutTo : spoken, cut: !!cutTo, patience: pat,
+          objection: ev === "rep-ended" ? null : obj, tag: tag ? { who, step: stp, ev: ev === "rep-ended" ? "hangup" : ev } : null, at: done, reqId, session: sessionThen });
+        st.reached = Math.max(st.reached, stp);
+        if (moved) return;                                     // who is on the line and the step were reset for the new session
+        st.who = sc.gk ? who : "dm"; st.step = stp;
         if (ev === "transferred") st.pendingEvent = "transferred";
         else if (ev !== "none") { st.ended = true; st.outcome = ev === "rep-ended" ? "wrapped" : ev; }
         st.lastReplyAt = done; st.lastAgentEnd = Math.max(st.lastAgentEnd || 0, done);

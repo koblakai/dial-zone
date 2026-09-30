@@ -1067,7 +1067,7 @@ import * as vc from "./voicecall.js";
       if(S.agent!==a||S.phase!=="live") return;
       beat("On hold — transferring…"); S.ringing=true; paintState();
       try{
-        const [sess]=await Promise.all([vc.api("/session",{scenarioId:S.scen.id,diff:S.diff,callId:a.callId}), phone.ring(1,S.callCtl.signal)]);
+        const [sess]=await Promise.all([vc.api("/session",{scenarioId:S.scen.id,diff:S.diff,callId:a.callId,transfer:true}), phone.ring(1,S.callCtl.signal)]);
         if(S.agent!==a||S.phase!=="live") return;
         a.closing=false; await agentConnect(a,sess);
         if(S.agent!==a||S.phase!=="live") return;

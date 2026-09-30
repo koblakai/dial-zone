@@ -421,3 +421,20 @@ test("a reply the rep talked over, that ran to its end anyway, is kept as the cu
   assert.deepEqual(st.turns.map((t) => t.side), ["them", "rep", "them", "rep", "them"]);
   assert.equal(st.turns[2].cut, true); assert.match(st.turns[2].text, /regarding/); assert.equal(st.turns[4].cut, false);
 });
+
+test("a transfer the browser reports before the transfer reply has been recorded keeps the whole call", async () => {
+  const { callId, llm, H } = await openCall();
+  await slow(700);
+  const F = llm([...H, { role: "user", content: "It's Sam from Levitate" }]); await settle(200);   // the transfer reply is still generating
+  const s2 = await (await post("/api/voice/session", { scenarioId: "meridian", diff: 3, callId, transfer: true })).json();
+  assert.equal(s2.transfer, true); assert.equal(s2.who, "dm"); assert.equal(s2.extraBody.dialroom.session, 2);
+  assert.match(spokenOf(await deltasOf(await F)), /put you through/); await settle(); await slow(0);
+  let st = await store.loadState(callId);
+  assert.deepEqual(st.turns.map((t) => t.side), ["them", "rep", "them"], "the front-desk exchange is all there");
+  assert.equal(st.turns[2].tag.ev, "transferred"); assert.equal(st.turns[2].who, "gatekeeper");
+  assert.deepEqual([st.who, st.elUserCount, st.pendingEvent, st.busy], ["dm", 0, null, false]);
+  const d = await deltasOf(await llmFor(callId, { session: 2 })([{ role: "user", content: TRANSFER }])); await settle();
+  assert.match(spokenOf(d), /This is Evan/);
+  st = await stateOf(callId);
+  assert.deepEqual(st.turns.map((t) => t.side), ["them", "rep", "them", "note", "them"], "the pickup cue is a hidden note"); assert.equal(st.turns.at(-1).who, "dm"); assert.equal(notesIn(st).length, 0);
+});
